@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Inventory Management</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; min-height: 100vh; display: flex; justify-content: center; align-items: flex-start; padding: 20px; }
+  .container { max-width: 520px; width: 100%; background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; }
+  .header { background: #1a73e8; color: #fff; padding: 16px 20px; font-size: 20px; font-weight: 600; }
+
+  .tabs { display: flex; border-bottom: 2px solid #e0e0e0; }
+  .tab { flex: 1; padding: 12px 0; text-align: center; font-size: 13px; font-weight: 600; color: #666; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -2px; transition: all 0.15s; }
+  .tab:hover { color: #1a73e8; }
+  .tab.active { color: #1a73e8; border-bottom-color: #1a73e8; }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .body { padding: 20px; }
+
+  .step { display: none; }
+  .step.active { display: block; }
+  .step-label { font-size: 13px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .step-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; color: #1a1a1a; }
+  input, select { width: 100%; padding: 14px; font-size: 18px; border: 2px solid #ddd; border-radius: 8px; outline: none; transition: border-color 0.2s; background: #fff; }
+  input:focus, select:focus { border-color: #1a73e8; }
+  .btn-row { display: flex; gap: 10px; margin-top: 12px; }
+  .btn { flex: 1; padding: 14px; font-size: 16px; font-weight: 600; border: none; border-radius: 8px; cursor: pointer; }
+  .btn-back { background: #e8eaed; color: #444; }
+  .btn-next { background: #1a73e8; color: #fff; }
+  .btn-next:disabled { background: #a0c4f1; cursor: not-allowed; }
+  .btn-success { background: #0d904f; color: #fff; }
+  .summary { background: #f8f9fa; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .summary-item { display: flex; justify-content: space-between; padding: 6px 0; font-size: 15px; }
+  .summary-item .label { color: #666; }
+  .summary-item .value { font-weight: 600; }
+  .item-card { background: #e8f0fe; border: 1px solid #c4d7f2; border-radius: 8px; padding: 14px; margin-bottom: 16px; }
+  .item-card .brand { font-size: 20px; font-weight: 700; color: #1a1a1a; }
+  .item-card .generic { font-size: 14px; color: #666; }
+  .item-card .specs { font-size: 14px; color: #444; margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .item-card .specs span { background: #fff; padding: 2px 8px; border-radius: 4px; border: 1px solid #ddd; }
+  .success { text-align: center; padding: 20px; }
+  .success h2 { color: #0d904f; margin-bottom: 16px; }
+  .success table { width: 100%; text-align: left; margin-bottom: 16px; }
+  .success td { padding: 8px 4px; font-size: 15px; }
+  .success td:first-child { color: #666; width: 110px; }
+  .success td:last-child { font-weight: 600; }
+  .success th { text-align: left; padding: 4px; font-size: 13px; color: #666; }
+  .error { color: #d93025; font-size: 14px; margin-top: 8px; display: none; }
+  .hint { font-size: 13px; color: #888; margin-top: 8px; }
+  .stock-info { background: #e8f5e9; border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; font-size: 14px; }
+  .stock-info .avail { font-size: 24px; font-weight: 700; color: #0d904f; }
+  .stock-info .label { color: #666; font-size: 12px; }
+  .stock-batches { font-size: 13px; color: #444; margin-top: 6px; }
+
+  .onhand-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .onhand-table th { text-align: left; padding: 10px 8px; background: #f8f9fa; color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; border-bottom: 2px solid #e0e0e0; }
+  .onhand-table td { padding: 10px 8px; border-bottom: 1px solid #f0f0f0; }
+  .onhand-table .brand-cell { font-weight: 600; }
+  .onhand-table .qty-cell { font-weight: 600; text-align: right; }
+  .onhand-table .exp-cell { white-space: nowrap; }
+  .onhand-table tr:hover { background: #f8f9ff; }
+  .batch-tag { display: inline-block; background: #e8f0fe; color: #1a73e8; padding: 1px 6px; border-radius: 3px; font-size: 12px; font-weight: 600; }
+  .exp-warn { color: #e37400; font-weight: 600; }
+  .exp-ok { color: #0d904f; }
+  .zero-qty { color: #999; }
+  .onhand-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .onhand-header h2 { font-size: 18px; }
+  .onhand-count { font-size: 14px; color: #666; }
+  .loading { text-align: center; padding: 40px; color: #999; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">Inventory Management — WH-001</div>
+  <div class="tabs">
+    <div class="tab active" id="tab-grn" onclick="switchTab('grn')">Receive</div>
+    <div class="tab" id="tab-gin" onclick="switchTab('gin')">Issue</div>
+    <div class="tab" id="tab-onhand" onclick="switchTab('onhand')">On Hand</div>
+  </div>
+
+  <!-- ===== RECEIVE STOCK (GRN) ===== -->
+  <div class="panel active" id="panel-grn">
+    <div class="body" id="grn-body">
+
+      <div class="step active" id="grn-step-1">
+        <div class="step-label">Step 1 of 4</div>
+        <div class="step-title">Scan or Enter Item Barcode</div>
+        <input type="text" id="grn-barcode" placeholder="Scan item barcode..." autocomplete="off">
+        <div class="hint">Test: 8901234567890 (Panadol), 8901234567892 (Calpol), 8901234567893 (Crocin)</div>
+        <div class="error" id="grn-item-error"></div>
+        <div class="btn-row">
+          <button class="btn btn-next" onclick="grnLookup()">Next</button>
+        </div>
+      </div>
+
+      <div class="step" id="grn-step-2">
+        <div class="step-label">Step 2 of 4</div>
+        <div class="step-title">Scan or Enter Batch Number</div>
+        <div id="grn-item-preview"></div>
+        <input type="text" id="grn-batch" placeholder="Scan batch barcode..." autocomplete="off">
+        <div class="hint">Example: BATCH-P500-A01</div>
+        <div class="error" id="grn-batch-error"></div>
+        <div class="btn-row">
+          <button class="btn btn-back" onclick="grnGoStep(1)">Back</button>
+          <button class="btn btn-next" onclick="grnSaveBatch()">Next</button>
+        </div>
+      </div>
+
+      <div class="step" id="grn-step-3">
+        <div class="step-label">Step 3 of 4</div>
+        <div class="step-title">Enter Expiry Date</div>
+        <div id="grn-batch-preview" style="font-size:15px;color:#666;margin-bottom:12px;"></div>
+        <input type="date" id="grn-expiry">
+        <div class="hint">Example: 2027-05-31</div>
+        <div class="error" id="grn-expiry-error"></div>
+        <div class="btn-row">
+          <button class="btn btn-back" onclick="grnGoStep(2)">Back</button>
+          <button class="btn btn-next" onclick="grnSaveExpiry()">Next</button>
+        </div>
+      </div>
+
+      <div class="step" id="grn-step-4">
+        <div class="step-label">Step 4 of 4</div>
+        <div class="step-title">Enter Quantity &amp; Confirm</div>
+        <div class="summary">
+          <div class="summary-item"><span class="label">Item</span><span class="value" id="grn-sum-item"></span></div>
+          <div class="summary-item"><span class="label">Generic</span><span class="value" id="grn-sum-generic"></span></div>
+          <div class="summary-item"><span class="label">Form / Strength</span><span class="value" id="grn-sum-form"></span></div>
+          <div class="summary-item"><span class="label">Pack Size</span><span class="value" id="grn-sum-pack"></span></div>
+          <div class="summary-item"><span class="label">Batch</span><span class="value" id="grn-sum-batch"></span></div>
+          <div class="summary-item"><span class="label">Expiry</span><span class="value" id="grn-sum-expiry"></span></div>
+        </div>
+        <input type="number" id="grn-qty" placeholder="Enter quantity..." min="1" inputmode="numeric">
+        <div class="error" id="grn-qty-error"></div>
+        <div class="btn-row">
+          <button class="btn btn-back" onclick="grnGoStep(3)">Back</button>
+          <button class="btn btn-success" onclick="grnSubmit()">Receive</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===== ISSUE STOCK (GIN) ===== -->
+  <div class="panel" id="panel-gin">
+    <div class="body" id="gin-body">
+
+      <div class="step active" id="gin-step-1">
+        <div class="step-label">Step 1 of 3</div>
+        <div class="step-title">Customer &amp; Item</div>
+        <input type="text" id="gin-customer" placeholder="Customer name..." autocomplete="off" style="margin-bottom:12px;">
+        <div class="hint" style="margin-top:0;margin-bottom:12px;">Example: City Pharmacy</div>
+        <input type="text" id="gin-barcode" placeholder="Scan item barcode..." autocomplete="off">
+        <div class="hint">Test: 8901234567890 (Panadol), 8901234567892 (Calpol)</div>
+        <div class="error" id="gin-item-error"></div>
+        <div class="btn-row">
+          <button class="btn btn-next" id="gin-next-1" onclick="ginLookup()">Next</button>
+        </div>
+      </div>
+
+      <div class="step" id="gin-step-2">
+        <div class="step-label">Step 2 of 3</div>
+        <div class="step-title">Enter Quantity to Issue</div>
+        <div id="gin-item-preview"></div>
+        <div class="stock-info" id="gin-stock-info"></div>
+        <input type="number" id="gin-qty" placeholder="Enter quantity..." min="1" inputmode="numeric">
+        <div class="error" id="gin-qty-error"></div>
+        <div class="btn-row">
+          <button class="btn btn-back" onclick="ginGoStep(1)">Back</button>
+          <button class="btn btn-success" onclick="ginSubmit()">Issue</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===== ON HAND ===== -->
+  <div class="panel" id="panel-onhand">
+    <div class="body">
+      <div class="onhand-header">
+        <h2>Current Stock</h2>
+        <span class="onhand-count" id="oh-count"></span>
+      </div>
+      <div class="loading" id="oh-loading">Loading...</div>
+      <table class="onhand-table" id="oh-table" style="display:none;">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Batch</th>
+            <th>Expiry</th>
+            <th>Qty</th>
+          </tr>
+        </thead>
+        <tbody id="oh-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ===== TABS =====
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+  document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
+  document.getElementById('tab-' + name).classList.add('active');
+  document.getElementById('panel-' + name).classList.add('active');
+  if (name === 'onhand') loadOnHand();
+  if (name === 'grn') document.getElementById('grn-barcode').focus();
+  if (name === 'gin') document.getElementById('gin-customer').focus();
+}
+
+// ===== GRN =====
+var grnStep = 1;
+var grnState = { item_id:'', generic_name:'', brand_name:'', dosage_form:'', strength:'', pack_size:0, uom:'', barcode:'', batch_no:'', expiry_date:'', qty:0 };
+
+function grnGoStep(n) {
+  document.getElementById('grn-step-' + grnStep).classList.remove('active');
+  grnStep = n;
+  document.getElementById('grn-step-' + grnStep).classList.add('active');
+  var ids = {1:'grn-barcode', 2:'grn-batch', 3:'grn-expiry', 4:'grn-qty'};
+  var el = document.getElementById(ids[n]); if (el) { el.focus(); el.select(); }
+  grnUpdateSummary();
+}
+
+function grnCard(it) {
+  return '<div class="item-card"><div class="brand">' + it.brand_name + '</div><div class="generic">' + it.generic_name + ' ' + it.strength + '</div><div class="specs"><span>' + it.dosage_form + '</span><span>' + it.pack_size + ' ' + it.uom + '</span><span>' + it.item_id + '</span></div></div>';
+}
+
+function grnUpdateSummary() {
+  document.getElementById('grn-sum-item').textContent = grnState.brand_name ? grnState.brand_name + ' (' + grnState.item_id + ')' : '\u2014';
+  document.getElementById('grn-sum-generic').textContent = grnState.generic_name ? grnState.generic_name + ' ' + grnState.strength : '\u2014';
+  document.getElementById('grn-sum-form').textContent = grnState.dosage_form || '\u2014';
+  document.getElementById('grn-sum-pack').textContent = grnState.pack_size ? grnState.pack_size + ' ' + grnState.uom : '\u2014';
+  document.getElementById('grn-sum-batch').textContent = grnState.batch_no || '\u2014';
+  document.getElementById('grn-sum-expiry').textContent = grnState.expiry_date || '\u2014';
+}
+
+function grnLookup() {
+  var bc = document.getElementById('grn-barcode').value.trim(); if (!bc) return;
+  fetch('/api/item/lookup?barcode=' + encodeURIComponent(bc))
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { showError('grn-item-error', d.error); return; }
+      showError('grn-item-error', '');
+      grnState.item_id = d.item_id; grnState.generic_name = d.generic_name; grnState.brand_name = d.brand_name;
+      grnState.dosage_form = d.dosage_form; grnState.strength = d.strength; grnState.pack_size = d.pack_size;
+      grnState.uom = d.uom; grnState.barcode = d.barcode;
+      document.getElementById('grn-item-preview').innerHTML = grnCard(d);
+      grnGoStep(2);
+    });
+}
+
+function grnSaveBatch() { var v = document.getElementById('grn-batch').value.trim(); if (!v) return; grnState.batch_no = v; showError('grn-batch-error', ''); document.getElementById('grn-batch-preview').textContent = 'Batch: ' + v; grnGoStep(3); }
+function grnSaveExpiry() { var v = document.getElementById('grn-expiry').value; if (!v) return; grnState.expiry_date = v; showError('grn-expiry-error', ''); grnUpdateSummary(); grnGoStep(4); }
+
+function grnSubmit() {
+  var q = parseInt(document.getElementById('grn-qty').value);
+  if (!q || q <= 0) { showError('grn-qty-error', 'Enter a valid quantity'); return; }
+  grnState.qty = q; showError('grn-qty-error', '');
+  var f = new FormData();
+  f.append('item_id', grnState.item_id); f.append('strength', grnState.strength);
+  f.append('batch_no', grnState.batch_no); f.append('expiry_date', grnState.expiry_date);
+  f.append('qty', grnState.qty); f.append('uom', grnState.uom); f.append('warehouse_id', 'WH-001');
+  fetch('/api/grn', { method: 'POST', body: f })
+    .then(function(r) { return r.text(); })
+    .then(function(html) { document.getElementById('grn-body').innerHTML = html; });
+}
+
+// GRN enter keys
+document.getElementById('grn-barcode').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); grnLookup(); } });
+document.getElementById('grn-batch').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); grnSaveBatch(); } });
+document.getElementById('grn-expiry').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); grnSaveExpiry(); } });
+document.getElementById('grn-qty').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); grnSubmit(); } });
+
+// ===== GIN =====
+var ginStep = 1;
+var ginState = { customer:'', item_id:'', generic_name:'', brand_name:'', dosage_form:'', strength:'', uom:'', total_avail:0, qty:0 };
+
+function ginGoStep(n) {
+  document.getElementById('gin-step-' + ginStep).classList.remove('active');
+  ginStep = n;
+  document.getElementById('gin-step-' + ginStep).classList.add('active');
+  if (n === 2) document.getElementById('gin-qty').focus();
+}
+
+function ginLookup() {
+  var cust = document.getElementById('gin-customer').value.trim();
+  var bc = document.getElementById('gin-barcode').value.trim();
+  if (!cust) { showError('gin-item-error', 'Enter customer name'); return; }
+  if (!bc) { showError('gin-item-error', 'Scan item barcode'); return; }
+
+  fetch('/api/item/lookup?barcode=' + encodeURIComponent(bc))
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { showError('gin-item-error', d.error); return; }
+      showError('gin-item-error', '');
+      ginState.customer = cust;
+      ginState.item_id = d.item_id; ginState.generic_name = d.generic_name; ginState.brand_name = d.brand_name;
+      ginState.dosage_form = d.dosage_form; ginState.strength = d.strength; ginState.uom = d.uom;
+      document.getElementById('gin-item-preview').innerHTML = grnCard(d);
+      // Fetch stock
+      return fetch('/api/gin/lookup?item_id=' + d.item_id + '&warehouse_id=WH-001');
+    })
+    .then(function(r) { return r ? r.json() : null; })
+    .then(function(s) {
+      if (!s) return;
+      ginState.total_avail = s.total_avail;
+      var html = '<div class="avail">' + s.total_avail + ' ' + ginState.uom + '</div><div class="label">Available in WH-001</div>';
+      if (s.batches && s.batches.length > 0) {
+        html += '<div class="stock-batches">Batches (FEFO): ';
+        html += s.batches.map(function(b) { return b.batch_no + ' (' + b.expiry_date + ') ' + b.qty_onhand; }).join(', ');
+        html += '</div>';
+      }
+      document.getElementById('gin-stock-info').innerHTML = html;
+      ginGoStep(2);
+    });
+}
+
+function ginSubmit() {
+  var q = parseInt(document.getElementById('gin-qty').value);
+  if (!q || q <= 0) { showError('gin-qty-error', 'Enter a valid quantity'); return; }
+  if (q > ginState.total_avail) { showError('gin-qty-error', 'Insufficient stock. Available: ' + ginState.total_avail); return; }
+  ginState.qty = q; showError('gin-qty-error', '');
+
+  var f = new FormData();
+  f.append('customer', ginState.customer); f.append('item_id', ginState.item_id);
+  f.append('strength', ginState.strength); f.append('qty', ginState.qty); f.append('warehouse_id', 'WH-001');
+  fetch('/api/gin', { method: 'POST', body: f })
+    .then(function(r) { return r.text(); })
+    .then(function(html) { document.getElementById('gin-body').innerHTML = html; });
+}
+
+// GIN enter keys
+document.getElementById('gin-customer').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('gin-barcode').focus(); } });
+document.getElementById('gin-barcode').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); ginLookup(); } });
+document.getElementById('gin-qty').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); ginSubmit(); } });
+
+// ===== ON HAND =====
+function loadOnHand() {
+  var tbody = document.getElementById('oh-tbody');
+  if (tbody.children.length > 0) return;
+  fetch('/api/onhand?warehouse_id=WH-001')
+    .then(function(r) { return r.json(); })
+    .then(function(rows) {
+      document.getElementById('oh-loading').style.display = 'none';
+      document.getElementById('oh-table').style.display = '';
+      document.getElementById('oh-count').textContent = rows.length + ' batch' + (rows.length !== 1 ? 'es' : '');
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;padding:24px;">No stock on hand</td></tr>';
+        return;
+      }
+      var today = new Date().toISOString().slice(0, 10);
+      var html = '';
+      rows.forEach(function(r) {
+        var expClass = r.expiry_date < today ? 'exp-warn' : 'exp-ok';
+        var qtyClass = r.qty_onhand === 0 ? 'zero-qty' : '';
+        var itemName = (r.brand_name || r.item_id) + ' ' + (r.strength || '');
+        html += '<tr>' +
+          '<td class="brand-cell">' + itemName + '<br><span style="font-size:12px;color:#888;">' + (r.generic_name||'') + ' ' + r.dosage_form + '</span></td>' +
+          '<td><span class="batch-tag">' + r.batch_no + '</span></td>' +
+          '<td class="exp-cell ' + expClass + '">' + r.expiry_date + '</td>' +
+          '<td class="qty-cell ' + qtyClass + '">' + r.qty_onhand + ' ' + r.uom + '</td>' +
+        '</tr>';
+      });
+      tbody.innerHTML = html;
+    });
+}
+
+function resetForm() { location.reload(); }
+function showError(id, msg) { var el = document.getElementById(id); el.textContent = msg; el.style.display = msg ? 'block' : 'none'; }
+</script>
+</body>
+</html>

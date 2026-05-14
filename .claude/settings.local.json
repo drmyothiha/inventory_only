@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go version *)",
+      "Bash(pkg list-installed *)",
+      "Bash(go mod *)",
+      "Bash(go get *)",
+      "Bash(go build *)",
+      "Bash(./inv_grn *)",
+      "Bash(curl -s http://localhost:9090/)",
+      "Bash(curl -s 'http://localhost:9090/api/item/lookup?barcode=8901234567890')",
+      "Bash(curl *)",
+      "Bash(sqlite3 *)",
+      "Bash(go run *)",
+      "Bash(pkill -f ./inv_grn)",
+      "Bash(python3 -m json.tool)"
+    ]
+  }
+}
