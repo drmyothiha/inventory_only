@@ -69,6 +69,15 @@
   .onhand-header h2 { font-size: 18px; }
   .onhand-count { font-size: 14px; color: #666; }
   .loading { text-align: center; padding: 40px; color: #999; }
+  .autocomplete-dropdown { border: 2px solid #1a73e8; border-top: none; border-radius: 0 0 8px 8px; max-height: 260px; overflow-y: auto; background: #fff; display: none; }
+  .autocomplete-dropdown.open { display: block; }
+  .autocomplete-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid #f0f0f0; }
+  .autocomplete-item:last-child { border-bottom: none; }
+  .autocomplete-item:hover, .autocomplete-item.active { background: #e8f0fe; }
+  .autocomplete-item .item-name { font-weight: 600; font-size: 15px; color: #1a1a1a; }
+  .autocomplete-item .item-detail { font-size: 13px; color: #666; margin-top: 2px; }
+  .autocomplete-item .item-detail span { margin-right: 10px; }
+  .autocomplete-no-results { padding: 12px 14px; color: #999; font-size: 14px; text-align: center; }
 </style>
 </head>
 <body>
@@ -152,6 +161,9 @@
         <div class="step-title">Customer &amp; Item</div>
         <input type="text" id="gin-customer" placeholder="Customer name..." autocomplete="off" style="margin-bottom:12px;">
         <div class="hint" style="margin-top:0;margin-bottom:12px;">Example: City Pharmacy</div>
+        <input type="text" id="gin-search" placeholder="Search item by generic or brand name..." autocomplete="off" style="margin-bottom:4px;">
+        <div class="autocomplete-dropdown" id="gin-search-results"></div>
+        <div style="text-align:center;color:#999;font-size:13px;margin:10px 0;">— or scan barcode —</div>
         <input type="text" id="gin-barcode" placeholder="Scan item barcode..." autocomplete="off">
         <div class="hint">Test: 8901234567890 (Panadol), 8901234567892 (Calpol)</div>
         <div class="error" id="gin-item-error"></div>
@@ -165,6 +177,13 @@
         <div class="step-title">Enter Quantity to Issue</div>
         <div id="gin-item-preview"></div>
         <div class="stock-info" id="gin-stock-info"></div>
+        <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="gin-fefo" checked onchange="ginToggleFEFO()" style="width:auto;accent-color:#1a73e8;">
+          <label for="gin-fefo" style="font-size:14px;color:#444;cursor:pointer;user-select:none;">Use FEFO (First Expired, First Out)</label>
+        </div>
+        <select id="gin-batch-select" style="display:none;margin-bottom:12px;" onchange="ginBatchChanged()">
+          <option value="">-- Select a batch --</option>
+        </select>
         <input type="number" id="gin-qty" placeholder="Enter quantity..." min="1" inputmode="numeric">
         <div class="error" id="gin-qty-error"></div>
         <div class="btn-row">
@@ -277,7 +296,7 @@ document.getElementById('grn-qty').addEventListener('keydown', function(e) { if 
 
 // ===== GIN =====
 var ginStep = 1;
-var ginState = { customer:'', item_id:'', generic_name:'', brand_name:'', dosage_form:'', strength:'', uom:'', total_avail:0, qty:0 };
+var ginState = { customer:'', item_id:'', generic_name:'', brand_name:'', dosage_form:'', strength:'', uom:'', total_avail:0, qty:0, batches:[], fefo:true };
 
 function ginGoStep(n) {
   document.getElementById('gin-step-' + ginStep).classList.remove('active');
@@ -308,13 +327,24 @@ function ginLookup() {
     .then(function(s) {
       if (!s) return;
       ginState.total_avail = s.total_avail;
+      ginState.batches = s.batches || [];
+      ginState.fefo = true;
+      document.getElementById('gin-fefo').checked = true;
       var html = '<div class="avail">' + s.total_avail + ' ' + ginState.uom + '</div><div class="label">Available in WH-001</div>';
       if (s.batches && s.batches.length > 0) {
-        html += '<div class="stock-batches">Batches (FEFO): ';
+        html += '<div class="stock-batches" id="gin-fefo-info">Batches (FEFO): ';
         html += s.batches.map(function(b) { return b.batch_no + ' (' + b.expiry_date + ') ' + b.qty_onhand; }).join(', ');
         html += '</div>';
       }
       document.getElementById('gin-stock-info').innerHTML = html;
+      var sel = document.getElementById('gin-batch-select');
+      sel.innerHTML = '<option value="">-- Select a batch --</option>';
+      ginState.batches.forEach(function(b) {
+        var label = (b.item_name || ginState.brand_name + ' ' + ginState.strength) + ' | Exp: ' + b.expiry_date + ' | Qty: ' + b.qty_onhand + ' ' + b.uom;
+        sel.innerHTML += '<option value="' + b.batch_no + '" data-qty="' + b.qty_onhand + '">' + label + '</option>';
+      });
+      sel.style.display = 'none';
+      document.getElementById('gin-stock-info').style.display = '';
       ginGoStep(2);
     });
 }
@@ -322,19 +352,182 @@ function ginLookup() {
 function ginSubmit() {
   var q = parseInt(document.getElementById('gin-qty').value);
   if (!q || q <= 0) { showError('gin-qty-error', 'Enter a valid quantity'); return; }
-  if (q > ginState.total_avail) { showError('gin-qty-error', 'Insufficient stock. Available: ' + ginState.total_avail); return; }
+
+  var fefoOn = document.getElementById('gin-fefo').checked;
+  if (fefoOn) {
+    if (q > ginState.total_avail) { showError('gin-qty-error', 'Insufficient stock. Available: ' + ginState.total_avail); return; }
+  } else {
+    var sel = document.getElementById('gin-batch-select');
+    if (!sel.value) { showError('gin-qty-error', 'Select a batch to issue from'); return; }
+    var opt = sel.selectedOptions[0];
+    var maxQty = parseInt(opt.getAttribute('data-qty'));
+    if (q > maxQty) { showError('gin-qty-error', 'Insufficient stock in selected batch. Available: ' + maxQty); return; }
+  }
   ginState.qty = q; showError('gin-qty-error', '');
 
   var f = new FormData();
   f.append('customer', ginState.customer); f.append('item_id', ginState.item_id);
   f.append('strength', ginState.strength); f.append('qty', ginState.qty); f.append('warehouse_id', 'WH-001');
+  if (!fefoOn) {
+    f.append('batch_no', document.getElementById('gin-batch-select').value);
+  }
   fetch('/api/gin', { method: 'POST', body: f })
     .then(function(r) { return r.text(); })
     .then(function(html) { document.getElementById('gin-body').innerHTML = html; });
 }
 
+function ginToggleFEFO() {
+  var fefoOn = document.getElementById('gin-fefo').checked;
+  ginState.fefo = fefoOn;
+  var sel = document.getElementById('gin-batch-select');
+  var info = document.getElementById('gin-stock-info');
+  if (fefoOn) {
+    sel.style.display = 'none';
+    info.style.display = '';
+    sel.value = '';
+  } else {
+    sel.style.display = '';
+    info.style.display = 'none';
+  }
+  var qtyEl = document.getElementById('gin-qty');
+  qtyEl.value = '';
+  qtyEl.placeholder = fefoOn ? 'Enter quantity...' : 'Enter quantity for selected batch...';
+}
+
+function ginBatchChanged() {
+  var sel = document.getElementById('gin-batch-select');
+  if (sel.value) {
+    var opt = sel.selectedOptions[0];
+    var maxQty = parseInt(opt.getAttribute('data-qty'));
+    document.getElementById('gin-qty').placeholder = 'Max: ' + maxQty;
+  }
+}
+
+// GIN autocomplete search
+var _ginSearchTimer = null;
+var _ginSearchIdx = -1;
+var _ginSearchResults = [];
+
+function ginSearchInput() {
+  clearTimeout(_ginSearchTimer);
+  var q = document.getElementById('gin-search').value.trim();
+  var dropdown = document.getElementById('gin-search-results');
+  if (q.length < 2) {
+    dropdown.classList.remove('open');
+    dropdown.innerHTML = '';
+    _ginSearchResults = [];
+    return;
+  }
+  _ginSearchTimer = setTimeout(function() {
+    fetch('/api/search-items?q=' + encodeURIComponent(q) + '&warehouse_id=WH-001')
+      .then(function(r) { return r.json(); })
+      .then(function(results) {
+        _ginSearchIdx = -1;
+        _ginSearchResults = results || [];
+        if (!results || results.length === 0) {
+          dropdown.innerHTML = '<div class="autocomplete-no-results">No matching items with stock</div>';
+        } else {
+          var html = '';
+          results.forEach(function(r, i) {
+            html += '<div class="autocomplete-item" data-idx="' + i + '" onclick="ginSearchSelect(' + i + ')">' +
+              '<div class="item-name">' + (r.generic_name + ' ' + r.strength) + '</div>' +
+              '<div class="item-detail">' +
+                '<span>' + r.brand_name + '</span>' +
+                '<span>Exp: ' + r.expiry_date + '</span>' +
+                '<span>Qty: ' + r.qty_onhand + ' ' + r.uom + '</span>' +
+              '</div>' +
+            '</div>';
+          });
+          dropdown.innerHTML = html;
+        }
+        dropdown.classList.add('open');
+      });
+  }, 250);
+}
+
+function ginSearchSelect(idx) {
+  var results = _ginSearchResults;
+  if (idx >= results.length) return;
+  var r = results[idx];
+  var cust = document.getElementById('gin-customer').value.trim();
+  if (!cust) { showError('gin-item-error', 'Enter customer name first'); return; }
+  showError('gin-item-error', '');
+  ginState.customer = cust;
+  ginState.item_id = r.item_id;
+  ginState.generic_name = r.generic_name;
+  ginState.brand_name = r.brand_name;
+  ginState.dosage_form = r.dosage_form;
+  ginState.strength = r.strength;
+  ginState.uom = r.uom;
+  var selectedBatchNo = r.batch_no;
+
+  document.getElementById('gin-item-preview').innerHTML = grnCard({
+    brand_name: r.brand_name, generic_name: r.generic_name,
+    strength: r.strength, dosage_form: r.dosage_form,
+    pack_size: '', uom: r.uom, item_id: r.item_id
+  });
+
+  // Fetch stock to populate batch dropdown
+  fetch('/api/gin/lookup?item_id=' + r.item_id + '&warehouse_id=WH-001')
+    .then(function(s) { return s.json(); })
+    .then(function(s) {
+      if (!s) return;
+      ginState.total_avail = s.total_avail;
+      ginState.batches = s.batches || [];
+      ginState.fefo = false;
+      document.getElementById('gin-fefo').checked = false;
+      document.getElementById('gin-stock-info').style.display = 'none';
+      var sel = document.getElementById('gin-batch-select');
+      sel.innerHTML = '<option value="">-- Select a batch --</option>';
+      ginState.batches.forEach(function(b) {
+        var label = (b.item_name || ginState.brand_name + ' ' + ginState.strength) + ' | Exp: ' + b.expiry_date + ' | Qty: ' + b.qty_onhand + ' ' + b.uom;
+        sel.innerHTML += '<option value="' + b.batch_no + '" data-qty="' + b.qty_onhand + '">' + label + '</option>';
+      });
+      sel.style.display = '';
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === selectedBatchNo) {
+          sel.selectedIndex = i;
+          ginBatchChanged();
+          break;
+        }
+      }
+      document.getElementById('gin-search-results').classList.remove('open');
+      document.getElementById('gin-search').value = '';
+      ginGoStep(2);
+    });
+}
+
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('#gin-search') && !e.target.closest('#gin-search-results')) {
+    document.getElementById('gin-search-results').classList.remove('open');
+  }
+});
+
+// GIN search input handler + keyboard nav
+document.getElementById('gin-search').addEventListener('keydown', function(e) {
+  var dropdown = document.getElementById('gin-search-results');
+  var items = dropdown.querySelectorAll('.autocomplete-item');
+  if (e.key === 'Escape') { dropdown.classList.remove('open'); return; }
+  if (!dropdown.classList.contains('open')) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    _ginSearchIdx = Math.min(_ginSearchIdx + 1, items.length - 1);
+    items.forEach(function(el, i) { el.classList.toggle('active', i === _ginSearchIdx); });
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    _ginSearchIdx = Math.max(_ginSearchIdx - 1, 0);
+    items.forEach(function(el, i) { el.classList.toggle('active', i === _ginSearchIdx); });
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (_ginSearchIdx >= 0 && _ginSearchIdx < items.length) {
+      ginSearchSelect(_ginSearchIdx);
+    }
+  }
+});
+document.getElementById('gin-search').addEventListener('input', ginSearchInput);
+
 // GIN enter keys
-document.getElementById('gin-customer').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('gin-barcode').focus(); } });
+document.getElementById('gin-customer').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('gin-search').focus(); } });
 document.getElementById('gin-barcode').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); ginLookup(); } });
 document.getElementById('gin-qty').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); ginSubmit(); } });
 

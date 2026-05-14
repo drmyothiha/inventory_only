@@ -19,7 +19,7 @@ const defaultWarehouse = "WH-001"
 
 func main() {
 	var err error
-	db, err = sql.Open("sqlite", "inv_grn.db")
+	db, err = sql.Open("sqlite", "file:inv_grn.db?cache=shared&mode=rwc&_journal_mode=DELETE&_busy_timeout=5000")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -31,6 +31,7 @@ func main() {
 	http.HandleFunc("/api/grn", handleGRN)
 	http.HandleFunc("/api/gin", handleGIN)
 	http.HandleFunc("/api/gin/", lookupStock)
+	http.HandleFunc("/api/search-items", searchItems)
 	http.HandleFunc("/api/item/", lookupItem)
 	http.HandleFunc("/api/onhand", getOnHand)
 
@@ -39,6 +40,9 @@ func main() {
 }
 
 func initDB() {
+	// Force DELETE journal mode — WAL can cause readonly issues on some platforms
+	db.Exec("PRAGMA journal_mode=DELETE")
+
 	schema := `
 	CREATE TABLE IF NOT EXISTS inv_item_master (
 		item_id TEXT PRIMARY KEY,
@@ -95,22 +99,34 @@ func initDB() {
 		FOREIGN KEY (gin_header_id) REFERENCES inv_gin_header(id)
 	);
 
+	CREATE TABLE IF NOT EXISTS inv_batch_master (
+		batch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+		item_id TEXT NOT NULL,
+		batch_no TEXT NOT NULL,
+		expiry_date TEXT NOT NULL,
+		manufacture_date TEXT,
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		UNIQUE(item_id, batch_no)
+	);
+
 	CREATE TABLE IF NOT EXISTS inv_onhand (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		item_id TEXT NOT NULL,
 		item_name TEXT NOT NULL,
 		warehouse_id TEXT NOT NULL DEFAULT 'WH-001',
-		batch_no TEXT NOT NULL,
-		expiry_date TEXT NOT NULL,
+		batch_id INTEGER NOT NULL,
 		qty_onhand INTEGER NOT NULL DEFAULT 0,
 		uom TEXT NOT NULL,
 		updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-		UNIQUE(item_id, warehouse_id, batch_no)
+		UNIQUE(item_id, warehouse_id, batch_id),
+		FOREIGN KEY (batch_id) REFERENCES inv_batch_master(batch_id)
 	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		log.Fatal(err)
 	}
+
+	migrateFromLegacyOnhand()
 
 	// Seed item master
 	items := []struct {
@@ -133,6 +149,96 @@ func initDB() {
 	fmt.Println("Database initialized.")
 }
 
+// migrateFromLegacyOnhand detects old onhand schema (with batch_no/expiry_date columns)
+// and migrates data to the normalized schema with inv_batch_master.
+func migrateFromLegacyOnhand() {
+	// Check if migration is needed by looking for the old 'batch_no' column
+	rows, err := db.Query("PRAGMA table_info(inv_onhand)")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	hasBatchNo := false
+	for rows.Next() {
+		var cid, notnull int
+		var name, coltype, dflt string
+		var pk int
+		rows.Scan(&cid, &name, &coltype, &notnull, &dflt, &pk)
+		if name == "batch_no" {
+			hasBatchNo = true
+			break
+		}
+	}
+	rows.Close()
+
+	if !hasBatchNo {
+		return // already migrated or fresh install
+	}
+
+	fmt.Println("Migrating inv_onhand to normalized batch_master schema...")
+
+	tx, err := db.Begin()
+	if err != nil {
+		log.Fatal("Migration begin failed:", err)
+	}
+	defer tx.Rollback()
+
+	// Populate batch_master from existing onhand
+	_, err = tx.Exec(`
+		INSERT OR IGNORE INTO inv_batch_master (item_id, batch_no, expiry_date)
+		SELECT DISTINCT item_id, batch_no, expiry_date FROM inv_onhand
+	`)
+	if err != nil {
+		log.Fatal("Migration populate batch_master failed:", err)
+	}
+
+	// Create new onhand table with batch_id
+	_, err = tx.Exec(`
+		CREATE TABLE inv_onhand_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			item_id TEXT NOT NULL,
+			item_name TEXT NOT NULL,
+			warehouse_id TEXT NOT NULL DEFAULT 'WH-001',
+			batch_id INTEGER NOT NULL,
+			qty_onhand INTEGER NOT NULL DEFAULT 0,
+			uom TEXT NOT NULL,
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			UNIQUE(item_id, warehouse_id, batch_id),
+			FOREIGN KEY (batch_id) REFERENCES inv_batch_master(batch_id)
+		)
+	`)
+	if err != nil {
+		log.Fatal("Migration create new onhand failed:", err)
+	}
+
+	// Migrate data
+	_, err = tx.Exec(`
+		INSERT INTO inv_onhand_new (id, item_id, item_name, warehouse_id, batch_id, qty_onhand, uom, updated_at)
+		SELECT o.id, o.item_id, o.item_name, o.warehouse_id, b.batch_id, o.qty_onhand, o.uom, o.updated_at
+		FROM inv_onhand o
+		JOIN inv_batch_master b ON o.item_id = b.item_id AND o.batch_no = b.batch_no
+	`)
+	if err != nil {
+		log.Fatal("Migration data copy failed:", err)
+	}
+
+	// Swap tables
+	_, err = tx.Exec("DROP TABLE inv_onhand")
+	if err != nil {
+		log.Fatal("Migration drop old onhand failed:", err)
+	}
+	_, err = tx.Exec("ALTER TABLE inv_onhand_new RENAME TO inv_onhand")
+	if err != nil {
+		log.Fatal("Migration rename failed:", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Fatal("Migration commit failed:", err)
+	}
+	fmt.Println("Migration complete.")
+}
+
 func serveForm(w http.ResponseWriter, r *http.Request) {
 	tmpl := template.Must(template.ParseFiles("templates/grn.html"))
 	tmpl.Execute(w, nil)
@@ -147,6 +253,62 @@ type ItemMaster struct {
 	PackSize    int    `json:"pack_size"`
 	UOM         string `json:"uom"`
 	Barcode     string `json:"barcode"`
+}
+
+func searchItems(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	warehouseID := r.URL.Query().Get("warehouse_id")
+	if warehouseID == "" {
+		warehouseID = defaultWarehouse
+	}
+	if q == "" {
+		http.Error(w, `{"error":"missing q"}`, 400)
+		return
+	}
+
+	like := "%" + q + "%"
+	rows, err := db.Query(`
+		SELECT i.item_id, i.generic_name, i.brand_name, i.dosage_form, i.strength,
+			   i.uom, i.barcode, b.batch_no, b.expiry_date, o.qty_onhand, o.item_name
+		FROM inv_item_master i
+		JOIN inv_onhand o ON i.item_id = o.item_id AND o.warehouse_id = ?
+		JOIN inv_batch_master b ON o.batch_id = b.batch_id
+		WHERE (i.generic_name LIKE ? OR i.brand_name LIKE ?) AND o.qty_onhand > 0
+		ORDER BY i.brand_name, b.expiry_date ASC
+	`, warehouseID, like, like)
+	if err != nil {
+		http.Error(w, "Query failed", 500)
+		return
+	}
+	defer rows.Close()
+
+	type Result struct {
+		ItemID      string `json:"item_id"`
+		GenericName string `json:"generic_name"`
+		BrandName   string `json:"brand_name"`
+		DosageForm  string `json:"dosage_form"`
+		Strength    string `json:"strength"`
+		UOM         string `json:"uom"`
+		Barcode     string `json:"barcode"`
+		BatchNo     string `json:"batch_no"`
+		ExpiryDate  string `json:"expiry_date"`
+		QtyOnHand   int    `json:"qty_onhand"`
+		ItemName    string `json:"item_name"`
+	}
+
+	var results []Result
+	for rows.Next() {
+		var r Result
+		rows.Scan(&r.ItemID, &r.GenericName, &r.BrandName, &r.DosageForm, &r.Strength,
+			&r.UOM, &r.Barcode, &r.BatchNo, &r.ExpiryDate, &r.QtyOnHand, &r.ItemName)
+		results = append(results, r)
+	}
+	if results == nil {
+		results = []Result{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
 }
 
 func lookupItem(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +382,49 @@ func handleGRN(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
+	// Enforce: one batch_no = one expiry_date
+	// If batch_no already exists with a different expiry, reject.
+	var existingExpiry string
+	err = tx.QueryRow(
+		`SELECT expiry_date FROM inv_batch_master WHERE item_id = ? AND batch_no = ?`,
+		itemID, batchNo,
+	).Scan(&existingExpiry)
+	if err == nil {
+		// Batch exists — verify expiry matches
+		if existingExpiry != expiryDate {
+			http.Error(w, fmt.Sprintf(
+				"Batch %s already exists with expiry %s (received %s). One batch number = one expiry date.",
+				batchNo, existingExpiry, expiryDate,
+			), 409)
+			return
+		}
+		// Expiry matches — proceed to add qty (second delivery, same batch)
+	} else if err != sql.ErrNoRows {
+		http.Error(w, "DB error", 500)
+		return
+	}
+
+	// Ensure batch master record exists (INSERT OR IGNORE for the matching-expiry case)
+	_, err = tx.Exec(
+		`INSERT OR IGNORE INTO inv_batch_master (item_id, batch_no, expiry_date) VALUES (?, ?, ?)`,
+		itemID, batchNo, expiryDate,
+	)
+	if err != nil {
+		http.Error(w, "Failed to create batch record", 500)
+		return
+	}
+
+	// Get batch_id
+	var batchID int64
+	err = tx.QueryRow(
+		`SELECT batch_id FROM inv_batch_master WHERE item_id = ? AND batch_no = ?`,
+		itemID, batchNo,
+	).Scan(&batchID)
+	if err != nil {
+		http.Error(w, "Failed to resolve batch", 500)
+		return
+	}
+
 	grnNo := fmt.Sprintf("GRN-%s", time.Now().Format("20060102-150405"))
 
 	res, err := tx.Exec(
@@ -243,12 +448,12 @@ func handleGRN(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = tx.Exec(
-		`INSERT INTO inv_onhand (item_id, item_name, warehouse_id, batch_no, expiry_date, qty_onhand, uom)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(item_id, warehouse_id, batch_no) DO UPDATE SET
+		`INSERT INTO inv_onhand (item_id, item_name, warehouse_id, batch_id, qty_onhand, uom)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(item_id, warehouse_id, batch_id) DO UPDATE SET
 		   qty_onhand = qty_onhand + excluded.qty_onhand,
 		   updated_at = datetime('now')`,
-		itemID, itemName, warehouseID, batchNo, expiryDate, qty, uom,
+		itemID, itemName, warehouseID, batchID, qty, uom,
 	)
 	if err != nil {
 		http.Error(w, "Failed to update onhand: "+err.Error(), 500)
@@ -290,10 +495,11 @@ func lookupStock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := db.Query(`
-		SELECT batch_no, expiry_date, qty_onhand, uom
-		FROM inv_onhand
-		WHERE item_id = ? AND warehouse_id = ? AND qty_onhand > 0
-		ORDER BY expiry_date ASC
+		SELECT b.batch_no, b.expiry_date, o.qty_onhand, o.uom, o.item_name
+		FROM inv_onhand o
+		JOIN inv_batch_master b ON o.batch_id = b.batch_id
+		WHERE o.item_id = ? AND o.warehouse_id = ? AND o.qty_onhand > 0
+		ORDER BY b.expiry_date ASC
 	`, itemID, warehouseID)
 	if err != nil {
 		http.Error(w, "Query failed", 500)
@@ -306,13 +512,14 @@ func lookupStock(w http.ResponseWriter, r *http.Request) {
 		ExpiryDate string `json:"expiry_date"`
 		QtyOnHand  int    `json:"qty_onhand"`
 		UOM        string `json:"uom"`
+		ItemName   string `json:"item_name"`
 	}
 
 	var batches []Batch
 	total := 0
 	for rows.Next() {
 		var b Batch
-		rows.Scan(&b.BatchNo, &b.ExpiryDate, &b.QtyOnHand, &b.UOM)
+		rows.Scan(&b.BatchNo, &b.ExpiryDate, &b.QtyOnHand, &b.UOM, &b.ItemName)
 		batches = append(batches, b)
 		total += b.QtyOnHand
 	}
@@ -336,6 +543,7 @@ func handleGIN(w http.ResponseWriter, r *http.Request) {
 	itemID := r.FormValue("item_id")
 	qtyStr := r.FormValue("qty")
 	warehouseID := r.FormValue("warehouse_id")
+	selectedBatch := r.FormValue("batch_no")
 	if warehouseID == "" {
 		warehouseID = defaultWarehouse
 	}
@@ -358,38 +566,6 @@ func handleGIN(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	// FEFO: fetch batches ordered by expiry ASC
-	rows, err := tx.Query(`
-		SELECT batch_no, expiry_date, qty_onhand, uom
-		FROM inv_onhand
-		WHERE item_id = ? AND warehouse_id = ? AND qty_onhand > 0
-		ORDER BY expiry_date ASC
-	`, itemID, warehouseID)
-	if err != nil {
-		http.Error(w, "Query failed", 500)
-		return
-	}
-	defer rows.Close()
-
-	type batch struct {
-		BatchNo, ExpiryDate, UOM string
-		Qty                      int
-	}
-	var batches []batch
-	totalAvail := 0
-	for rows.Next() {
-		var b batch
-		rows.Scan(&b.BatchNo, &b.ExpiryDate, &b.Qty, &b.UOM)
-		batches = append(batches, b)
-		totalAvail += b.Qty
-	}
-	rows.Close()
-
-	if totalAvail < qtyReq {
-		http.Error(w, fmt.Sprintf("Insufficient stock: requested %d, available %d", qtyReq, totalAvail), 400)
-		return
-	}
-
 	// Build item name
 	itemName := itemID
 	genName := ""
@@ -404,23 +580,85 @@ func handleGIN(w http.ResponseWriter, r *http.Request) {
 		itemUOM = "Pack"
 	}
 
-	// FEFO allocation
-	remaining := qtyReq
-	type alloc struct{ BatchNo, ExpiryDate, UOM string; Qty int }
+	type alloc struct{ BatchID int64; BatchNo, ExpiryDate, UOM string; Qty int }
 	var allocations []alloc
-	for i := range batches {
-		if remaining <= 0 {
-			break
+
+	if selectedBatch != "" {
+		// Manual batch selection — allocate from specified batch only
+		var b struct{ BatchID int64; BatchNo, ExpiryDate, UOM string; Qty int }
+		err := tx.QueryRow(`
+			SELECT b.batch_id, b.batch_no, b.expiry_date, o.qty_onhand, o.uom
+			FROM inv_onhand o
+			JOIN inv_batch_master b ON o.batch_id = b.batch_id
+			WHERE o.item_id = ? AND o.warehouse_id = ? AND b.batch_no = ? AND o.qty_onhand > 0
+		`, itemID, warehouseID, selectedBatch).Scan(&b.BatchID, &b.BatchNo, &b.ExpiryDate, &b.Qty, &b.UOM)
+		if err == sql.ErrNoRows {
+			http.Error(w, "Selected batch not found or has no stock", 400)
+			return
 		}
-		take := batches[i].Qty
-		if take > remaining {
-			take = remaining
+		if err != nil {
+			http.Error(w, "Query failed", 500)
+			return
 		}
-		remaining -= take
+		if b.Qty < qtyReq {
+			http.Error(w, fmt.Sprintf("Insufficient stock in batch %s: requested %d, available %d", selectedBatch, qtyReq, b.Qty), 400)
+			return
+		}
 		allocations = append(allocations, alloc{
-			BatchNo: batches[i].BatchNo, ExpiryDate: batches[i].ExpiryDate,
-			UOM: batches[i].UOM, Qty: take,
+			BatchID: b.BatchID, BatchNo: b.BatchNo, ExpiryDate: b.ExpiryDate,
+			UOM: b.UOM, Qty: qtyReq,
 		})
+	} else {
+		// FEFO: fetch batches ordered by expiry ASC
+		rows, err := tx.Query(`
+			SELECT b.batch_id, b.batch_no, b.expiry_date, o.qty_onhand, o.uom
+			FROM inv_onhand o
+			JOIN inv_batch_master b ON o.batch_id = b.batch_id
+			WHERE o.item_id = ? AND o.warehouse_id = ? AND o.qty_onhand > 0
+			ORDER BY b.expiry_date ASC
+		`, itemID, warehouseID)
+		if err != nil {
+			http.Error(w, "Query failed", 500)
+			return
+		}
+		defer rows.Close()
+
+		type batch struct {
+			BatchID                  int64
+			BatchNo, ExpiryDate, UOM string
+			Qty                      int
+		}
+		var batches []batch
+		totalAvail := 0
+		for rows.Next() {
+			var b batch
+			rows.Scan(&b.BatchID, &b.BatchNo, &b.ExpiryDate, &b.Qty, &b.UOM)
+			batches = append(batches, b)
+			totalAvail += b.Qty
+		}
+		rows.Close()
+
+		if totalAvail < qtyReq {
+			http.Error(w, fmt.Sprintf("Insufficient stock: requested %d, available %d", qtyReq, totalAvail), 400)
+			return
+		}
+
+		// FEFO allocation
+		remaining := qtyReq
+		for i := range batches {
+			if remaining <= 0 {
+				break
+			}
+			take := batches[i].Qty
+			if take > remaining {
+				take = remaining
+			}
+			remaining -= take
+			allocations = append(allocations, alloc{
+				BatchID: batches[i].BatchID, BatchNo: batches[i].BatchNo,
+				ExpiryDate: batches[i].ExpiryDate, UOM: batches[i].UOM, Qty: take,
+			})
+		}
 	}
 
 	// Insert GIN header
@@ -449,8 +687,8 @@ func handleGIN(w http.ResponseWriter, r *http.Request) {
 
 		_, err = tx.Exec(
 			`UPDATE inv_onhand SET qty_onhand = qty_onhand - ?, updated_at = datetime('now')
-			 WHERE item_id = ? AND warehouse_id = ? AND batch_no = ?`,
-			a.Qty, itemID, warehouseID, a.BatchNo,
+			 WHERE item_id = ? AND warehouse_id = ? AND batch_id = ?`,
+			a.Qty, itemID, warehouseID, a.BatchID,
 		)
 		if err != nil {
 			http.Error(w, "Failed to deduct onhand", 500)
@@ -480,7 +718,12 @@ func handleGIN(w http.ResponseWriter, r *http.Request) {
 				<tr><td>Item</td><td>%s</td></tr>
 				<tr><td>Total Issued</td><td>%d %s</td></tr>
 			</table>
-			<h3 style="margin-top:12px;font-size:14px;color:#666;">FEFO Allocation</h3>
+			<h3 style="margin-top:12px;font-size:14px;color:#666;">` + func() string {
+		if selectedBatch != "" {
+			return "Manual Batch Selection"
+		}
+		return "FEFO Allocation"
+	}() + `</h3>
 			<table>
 				<tr><th style="text-align:left;padding:4px;">Batch</th><th style="text-align:left;padding:4px;">Expiry</th><th style="text-align:left;padding:4px;">Qty</th></tr>
 				%s
@@ -502,11 +745,12 @@ func getOnHand(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := db.Query(`
 		SELECT o.item_id, m.brand_name, m.generic_name, m.strength, m.dosage_form,
-			   o.batch_no, o.expiry_date, o.qty_onhand, o.uom, o.warehouse_id, o.updated_at
+			   b.batch_no, b.expiry_date, o.qty_onhand, o.uom, o.warehouse_id, o.updated_at
 		FROM inv_onhand o
 		LEFT JOIN inv_item_master m ON o.item_id = m.item_id
+		JOIN inv_batch_master b ON o.batch_id = b.batch_id
 		`+filter+`
-		ORDER BY m.brand_name, o.expiry_date
+		ORDER BY m.brand_name, b.expiry_date
 	`, args...)
 	if err != nil {
 		http.Error(w, "Query failed", 500)
