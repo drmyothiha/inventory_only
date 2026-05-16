@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Inventory Management</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; min-height: 100vh; display: flex; justify-content: center; align-items: flex-start; padding: 20px; }
@@ -69,6 +70,16 @@
   .onhand-header h2 { font-size: 18px; }
   .onhand-count { font-size: 14px; color: #666; }
   .loading { text-align: center; padding: 40px; color: #999; }
+  .scanner-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.75); z-index: 100; justify-content: center; align-items: center; }
+  .scanner-overlay.active { display: flex; }
+  .scanner-box { background: #fff; border-radius: 12px; padding: 16px; width: 92%; max-width: 400px; }
+  .scanner-box .scanner-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
+  #scanner-reader { width: 100%; min-height: 300px; margin-bottom: 12px; }
+  #scanner-reader video { border-radius: 8px; }
+  .btn-scan { padding: 14px 16px; font-size: 14px; font-weight: 600; border: 2px solid #1a73e8; border-radius: 8px; cursor: pointer; background: #fff; color: #1a73e8; white-space: nowrap; min-width: 64px; }
+  .btn-scan:active { background: #e8f0fe; }
+  .input-scan-row { display: flex; gap: 8px; }
+  .input-scan-row input { flex: 1; }
   .autocomplete-dropdown { border: 2px solid #1a73e8; border-top: none; border-radius: 0 0 8px 8px; max-height: 260px; overflow-y: auto; background: #fff; display: none; }
   .autocomplete-dropdown.open { display: block; }
   .autocomplete-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid #f0f0f0; }
@@ -78,6 +89,13 @@
   .autocomplete-item .item-detail { font-size: 13px; color: #666; margin-top: 2px; }
   .autocomplete-item .item-detail span { margin-right: 10px; }
   .autocomplete-no-results { padding: 12px 14px; color: #999; font-size: 14px; text-align: center; }
+  .notfound-box { background: #fff8e1; border: 1px solid #f9a825; border-radius: 8px; padding: 14px; margin-top: 12px; }
+  .notfound-box .nf-msg { font-size: 14px; color: #e65100; margin-bottom: 10px; }
+  .notfound-box .nf-barcode { font-weight: 700; }
+  .new-item-form { background: #f8f9fa; border-radius: 8px; padding: 12px; margin-top: 12px; }
+  .new-item-form input, .new-item-form select { margin-bottom: 8px; font-size: 16px; padding: 12px; }
+  .new-item-form label { font-size: 12px; color: #666; display: block; margin-bottom: 2px; }
+  .link-search-box { margin-top: 12px; }
 </style>
 </head>
 <body>
@@ -96,9 +114,44 @@
       <div class="step active" id="grn-step-1">
         <div class="step-label">Step 1 of 4</div>
         <div class="step-title">Scan or Enter Item Barcode</div>
-        <input type="text" id="grn-barcode" placeholder="Scan item barcode..." autocomplete="off">
+        <div class="input-scan-row">
+          <input type="text" id="grn-barcode" placeholder="Scan item barcode..." autocomplete="off">
+          <button class="btn-scan" onclick="startScan('grn-barcode', grnLookup)" title="Scan with camera">Scan</button>
+        </div>
         <div class="hint">Test: 8901234567890 (Panadol), 8901234567892 (Calpol), 8901234567893 (Crocin)</div>
         <div class="error" id="grn-item-error"></div>
+        <div id="grn-notfound" style="display:none;">
+          <div class="notfound-box">
+            <div class="nf-msg">Item not found for barcode <span class="nf-barcode" id="grn-nf-barcode"></span></div>
+            <div class="btn-row">
+              <button class="btn btn-next" onclick="grnShowCreateForm()" style="flex:1;">Create New Item</button>
+              <button class="btn btn-back" onclick="grnShowLinkSearch()" style="flex:1;">Link to Existing</button>
+            </div>
+            <div id="grn-create-form" class="new-item-form" style="display:none;">
+              <label>Generic Name</label><input type="text" id="grn-cf-generic" placeholder="e.g. Paracetamol">
+              <label>Brand Name</label><input type="text" id="grn-cf-brand" placeholder="e.g. Panadol">
+              <label>Dosage Form</label><input type="text" id="grn-cf-form" placeholder="e.g. Tablet">
+              <label>Strength</label><input type="text" id="grn-cf-strength" placeholder="e.g. 500mg">
+              <label>Pack Size</label><input type="number" id="grn-cf-pack" placeholder="e.g. 100" min="1">
+              <label>UOM</label><input type="text" id="grn-cf-uom" placeholder="e.g. Pack" value="Pack">
+              <label>Manufacturer</label><input type="text" id="grn-cf-manufacturer" placeholder="e.g. GSK">
+              <label>Country</label><input type="text" id="grn-cf-country" placeholder="e.g. UK">
+              <div class="btn-row">
+                <button class="btn btn-back" onclick="grnHideNotfound()">Cancel</button>
+                <button class="btn btn-success" onclick="grnCreateItem()">Save Item</button>
+              </div>
+              <div class="error" id="grn-create-error"></div>
+            </div>
+            <div id="grn-link-search" class="link-search-box" style="display:none;">
+              <input type="text" id="grn-link-input" placeholder="Search item by name..." autocomplete="off" oninput="grnLinkSearchInput()">
+              <div class="autocomplete-dropdown" id="grn-link-results"></div>
+              <div class="btn-row">
+                <button class="btn btn-back" onclick="grnHideNotfound()">Cancel</button>
+              </div>
+              <div class="error" id="grn-link-error"></div>
+            </div>
+          </div>
+        </div>
         <div class="btn-row">
           <button class="btn btn-next" onclick="grnLookup()">Next</button>
         </div>
@@ -108,7 +161,10 @@
         <div class="step-label">Step 2 of 4</div>
         <div class="step-title">Scan or Enter Batch Number</div>
         <div id="grn-item-preview"></div>
-        <input type="text" id="grn-batch" placeholder="Scan batch barcode..." autocomplete="off">
+        <div class="input-scan-row">
+          <input type="text" id="grn-batch" placeholder="Scan batch barcode..." autocomplete="off">
+          <button class="btn-scan" onclick="startScan('grn-batch', grnSaveBatch)" title="Scan with camera">Scan</button>
+        </div>
         <div class="hint">Example: BATCH-P500-A01</div>
         <div class="error" id="grn-batch-error"></div>
         <div class="btn-row">
@@ -164,9 +220,44 @@
         <input type="text" id="gin-search" placeholder="Search item by generic or brand name..." autocomplete="off" style="margin-bottom:4px;">
         <div class="autocomplete-dropdown" id="gin-search-results"></div>
         <div style="text-align:center;color:#999;font-size:13px;margin:10px 0;">— or scan barcode —</div>
-        <input type="text" id="gin-barcode" placeholder="Scan item barcode..." autocomplete="off">
+        <div class="input-scan-row">
+          <input type="text" id="gin-barcode" placeholder="Scan item barcode..." autocomplete="off">
+          <button class="btn-scan" onclick="startScan('gin-barcode', ginLookup)" title="Scan with camera">Scan</button>
+        </div>
         <div class="hint">Test: 8901234567890 (Panadol), 8901234567892 (Calpol)</div>
         <div class="error" id="gin-item-error"></div>
+        <div id="gin-notfound" style="display:none;">
+          <div class="notfound-box">
+            <div class="nf-msg">Item not found for barcode <span class="nf-barcode" id="gin-nf-barcode"></span></div>
+            <div class="btn-row">
+              <button class="btn btn-next" onclick="ginShowCreateForm()" style="flex:1;">Create New Item</button>
+              <button class="btn btn-back" onclick="ginShowLinkSearch()" style="flex:1;">Link to Existing</button>
+            </div>
+            <div id="gin-create-form" class="new-item-form" style="display:none;">
+              <label>Generic Name</label><input type="text" id="gin-cf-generic" placeholder="e.g. Paracetamol">
+              <label>Brand Name</label><input type="text" id="gin-cf-brand" placeholder="e.g. Panadol">
+              <label>Dosage Form</label><input type="text" id="gin-cf-form" placeholder="e.g. Tablet">
+              <label>Strength</label><input type="text" id="gin-cf-strength" placeholder="e.g. 500mg">
+              <label>Pack Size</label><input type="number" id="gin-cf-pack" placeholder="e.g. 100" min="1">
+              <label>UOM</label><input type="text" id="gin-cf-uom" placeholder="e.g. Pack" value="Pack">
+              <label>Manufacturer</label><input type="text" id="gin-cf-manufacturer" placeholder="e.g. GSK">
+              <label>Country</label><input type="text" id="gin-cf-country" placeholder="e.g. UK">
+              <div class="btn-row">
+                <button class="btn btn-back" onclick="ginHideNotfound()">Cancel</button>
+                <button class="btn btn-success" onclick="ginCreateItem()">Save Item</button>
+              </div>
+              <div class="error" id="gin-create-error"></div>
+            </div>
+            <div id="gin-link-search" class="link-search-box" style="display:none;">
+              <input type="text" id="gin-link-input" placeholder="Search item by name..." autocomplete="off" oninput="ginLinkSearchInput()">
+              <div class="autocomplete-dropdown" id="gin-link-results"></div>
+              <div class="btn-row">
+                <button class="btn btn-back" onclick="ginHideNotfound()">Cancel</button>
+              </div>
+              <div class="error" id="gin-link-error"></div>
+            </div>
+          </div>
+        </div>
         <div class="btn-row">
           <button class="btn btn-next" id="gin-next-1" onclick="ginLookup()">Next</button>
         </div>
@@ -217,6 +308,16 @@
     </div>
   </div>
 
+
+<div class="scanner-overlay" id="scanner-overlay">
+  <div class="scanner-box">
+    <div class="scanner-title">Scan Barcode</div>
+    <div id="scanner-reader"></div>
+    <div class="btn-row">
+      <button class="btn btn-back" onclick="stopScan()">Cancel</button>
+    </div>
+  </div>
+</div>
 </div>
 
 <script>
@@ -229,6 +330,45 @@ function switchTab(name) {
   if (name === 'onhand') loadOnHand();
   if (name === 'grn') document.getElementById('grn-barcode').focus();
   if (name === 'gin') document.getElementById('gin-customer').focus();
+}
+
+// ===== BARCODE SCANNER =====
+var _html5QrcodeScanner = null;
+var _scanTargetInput = null;
+var _scanCallback = null;
+
+function startScan(inputId, callback) {
+  _scanTargetInput = document.getElementById(inputId);
+  _scanCallback = callback;
+
+  if (_html5QrcodeScanner === null) {
+    _html5QrcodeScanner = new Html5Qrcode("scanner-reader");
+  }
+
+  document.getElementById('scanner-overlay').classList.add('active');
+
+  _html5QrcodeScanner.start(
+    { facingMode: "environment" },
+    { fps: 10, qrbox: { width: 250, height: 150 } },
+    function(decodedText) {
+      _scanTargetInput.value = decodedText;
+      stopScan();
+      if (_scanCallback) _scanCallback();
+    },
+    function() {}
+  ).catch(function(err) {
+    stopScan();
+    alert('Camera error: ' + (err.message || err));
+  });
+}
+
+function stopScan() {
+  document.getElementById('scanner-overlay').classList.remove('active');
+  if (_html5QrcodeScanner) {
+    _html5QrcodeScanner.stop().catch(function() {});
+  }
+  _scanTargetInput = null;
+  _scanCallback = null;
 }
 
 // ===== GRN =====
@@ -245,7 +385,11 @@ function grnGoStep(n) {
 }
 
 function grnCard(it) {
-  return '<div class="item-card"><div class="brand">' + it.brand_name + '</div><div class="generic">' + it.generic_name + ' ' + it.strength + '</div><div class="specs"><span>' + it.dosage_form + '</span><span>' + it.pack_size + ' ' + it.uom + '</span><span>' + it.item_id + '</span></div></div>';
+  var html = '<div class="item-card"><div class="brand">' + it.brand_name + '</div><div class="generic">' + it.generic_name + ' ' + it.strength + '</div><div class="specs"><span>' + it.dosage_form + '</span><span>' + it.pack_size + ' ' + it.uom + '</span><span>' + it.item_id + '</span>';
+  if (it.manufacturer) html += '<span>' + it.manufacturer + '</span>';
+  if (it.country) html += '<span>' + it.country + '</span>';
+  html += '</div></div>';
+  return html;
 }
 
 function grnUpdateSummary() {
@@ -262,7 +406,18 @@ function grnLookup() {
   fetch('/api/item/lookup?barcode=' + encodeURIComponent(bc))
     .then(function(r) { return r.json(); })
     .then(function(d) {
-      if (d.error) { showError('grn-item-error', d.error); return; }
+      if (d.error) {
+        if (d.error === 'item not found') {
+          showError('grn-item-error', '');
+          document.getElementById('grn-nf-barcode').textContent = bc;
+          document.getElementById('grn-notfound').style.display = '';
+          document.getElementById('grn-create-form').style.display = 'none';
+          document.getElementById('grn-link-search').style.display = 'none';
+          return;
+        }
+        showError('grn-item-error', d.error);
+        return;
+      }
       showError('grn-item-error', '');
       grnState.item_id = d.item_id; grnState.generic_name = d.generic_name; grnState.brand_name = d.brand_name;
       grnState.dosage_form = d.dosage_form; grnState.strength = d.strength; grnState.pack_size = d.pack_size;
@@ -271,6 +426,121 @@ function grnLookup() {
       grnGoStep(2);
     });
 }
+
+function grnShowCreateForm() {
+  document.getElementById('grn-create-form').style.display = '';
+  document.getElementById('grn-link-search').style.display = 'none';
+  document.getElementById('grn-cf-generic').focus();
+}
+
+function grnShowLinkSearch() {
+  document.getElementById('grn-link-search').style.display = '';
+  document.getElementById('grn-create-form').style.display = 'none';
+  document.getElementById('grn-link-input').value = ''; document.getElementById('grn-link-results').innerHTML = '';
+  document.getElementById('grn-link-input').focus();
+}
+
+function grnHideNotfound() {
+  document.getElementById('grn-notfound').style.display = 'none';
+  document.getElementById('grn-create-form').style.display = 'none';
+  document.getElementById('grn-link-search').style.display = 'none';
+  showError('grn-create-error', '');
+  showError('grn-link-error', '');
+  document.getElementById('grn-barcode').focus();
+}
+
+function grnCreateItem() {
+  var data = new URLSearchParams();
+  data.append('generic_name', document.getElementById('grn-cf-generic').value.trim());
+  data.append('brand_name', document.getElementById('grn-cf-brand').value.trim());
+  data.append('dosage_form', document.getElementById('grn-cf-form').value.trim());
+  data.append('strength', document.getElementById('grn-cf-strength').value.trim());
+  data.append('pack_size', document.getElementById('grn-cf-pack').value.trim());
+  data.append('uom', document.getElementById('grn-cf-uom').value.trim());
+  data.append('manufacturer', document.getElementById('grn-cf-manufacturer').value.trim());
+  data.append('country', document.getElementById('grn-cf-country').value.trim());
+  data.append('barcode', document.getElementById('grn-barcode').value.trim());
+
+  fetch('/api/create-item', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: data })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { showError('grn-create-error', d.error); return; }
+      showError('grn-create-error', '');
+      grnState.item_id = d.item_id; grnState.generic_name = d.generic_name; grnState.brand_name = d.brand_name;
+      grnState.dosage_form = d.dosage_form; grnState.strength = d.strength; grnState.pack_size = d.pack_size;
+      grnState.uom = d.uom; grnState.barcode = d.barcode;
+      document.getElementById('grn-item-preview').innerHTML = grnCard(d);
+      grnHideNotfound();
+      grnGoStep(2);
+    });
+}
+
+var _grnLinkTimer = null;
+var _grnLinkResults = [];
+function grnLinkSearchInput() {
+  clearTimeout(_grnLinkTimer);
+  var q = document.getElementById('grn-link-input').value.trim();
+  var dropdown = document.getElementById('grn-link-results');
+  if (q.length < 2) { dropdown.classList.remove('open'); dropdown.innerHTML = ''; return; }
+  _grnLinkTimer = setTimeout(function() {
+    fetch('/api/search-items?q=' + encodeURIComponent(q) + '&all=1')
+      .then(function(r) { return r.json(); })
+      .then(function(results) {
+        _grnLinkResults = results || [];
+        if (results.length === 0) {
+          dropdown.innerHTML = '<div class="autocomplete-no-results">No matching items</div>';
+        } else {
+          var html = '';
+          results.forEach(function(r, i) {
+            html += '<div class="autocomplete-item" onclick="grnLinkSelect(' + i + ')">' +
+              '<div class="item-name">' + r.brand_name + ' (' + r.generic_name + ' ' + r.strength + ')</div>' +
+              '<div class="item-detail"><span>' + r.dosage_form + '</span><span>' + r.item_id + '</span><span>Pack: ' + r.pack_size + ' ' + r.uom + '</span></div>' +
+            '</div>';
+          });
+          dropdown.innerHTML = html;
+        }
+        dropdown.classList.add('open');
+      });
+  }, 250);
+}
+
+function grnLinkSelect(idx) {
+  var r = _grnLinkResults[idx]; if (!r) return;
+  var data = new URLSearchParams();
+  data.append('item_id', r.item_id);
+  data.append('barcode', document.getElementById('grn-barcode').value.trim());
+  fetch('/api/link-barcode', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: data })
+    .then(function(resp) { return resp.json(); })
+    .then(function(d) {
+      if (d.error) { showError('grn-link-error', d.error); return; }
+      showError('grn-link-error', '');
+      grnState.item_id = d.item_id; grnState.generic_name = d.generic_name; grnState.brand_name = d.brand_name;
+      grnState.dosage_form = d.dosage_form; grnState.strength = d.strength; grnState.pack_size = d.pack_size;
+      grnState.uom = d.uom; grnState.barcode = d.barcode;
+      document.getElementById('grn-item-preview').innerHTML = grnCard(d);
+      grnHideNotfound();
+      grnGoStep(2);
+    });
+}
+
+// GRN link search keyboard nav
+document.getElementById('grn-link-input').addEventListener('keydown', function(e) {
+  var dropdown = document.getElementById('grn-link-results');
+  var items = dropdown.querySelectorAll('.autocomplete-item');
+  if (e.key === 'Escape') { dropdown.classList.remove('open'); return; }
+  if (!dropdown.classList.contains('open')) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault(); _grnLinkSearchIdx = Math.min((_grnLinkSearchIdx || -1) + 1, items.length - 1);
+    items.forEach(function(el, i) { el.classList.toggle('active', i === _grnLinkSearchIdx); });
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault(); _grnLinkSearchIdx = Math.max((_grnLinkSearchIdx || 0) - 1, 0);
+    items.forEach(function(el, i) { el.classList.toggle('active', i === _grnLinkSearchIdx); });
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (_grnLinkSearchIdx >= 0 && _grnLinkSearchIdx < items.length) grnLinkSelect(_grnLinkSearchIdx);
+  }
+});
+var _grnLinkSearchIdx = -1;
 
 function grnSaveBatch() { var v = document.getElementById('grn-batch').value.trim(); if (!v) return; grnState.batch_no = v; showError('grn-batch-error', ''); document.getElementById('grn-batch-preview').textContent = 'Batch: ' + v; grnGoStep(3); }
 function grnSaveExpiry() { var v = document.getElementById('grn-expiry').value; if (!v) return; grnState.expiry_date = v; showError('grn-expiry-error', ''); grnUpdateSummary(); grnGoStep(4); }
@@ -314,7 +584,18 @@ function ginLookup() {
   fetch('/api/item/lookup?barcode=' + encodeURIComponent(bc))
     .then(function(r) { return r.json(); })
     .then(function(d) {
-      if (d.error) { showError('gin-item-error', d.error); return; }
+      if (d.error) {
+        if (d.error === 'item not found') {
+          showError('gin-item-error', '');
+          document.getElementById('gin-nf-barcode').textContent = bc;
+          document.getElementById('gin-notfound').style.display = '';
+          document.getElementById('gin-create-form').style.display = 'none';
+          document.getElementById('gin-link-search').style.display = 'none';
+          return;
+        }
+        showError('gin-item-error', d.error);
+        return;
+      }
       showError('gin-item-error', '');
       ginState.customer = cust;
       ginState.item_id = d.item_id; ginState.generic_name = d.generic_name; ginState.brand_name = d.brand_name;
@@ -348,6 +629,169 @@ function ginLookup() {
       ginGoStep(2);
     });
 }
+
+function ginShowCreateForm() {
+  document.getElementById('gin-create-form').style.display = '';
+  document.getElementById('gin-link-search').style.display = 'none';
+  document.getElementById('gin-cf-generic').focus();
+}
+
+function ginShowLinkSearch() {
+  document.getElementById('gin-link-search').style.display = '';
+  document.getElementById('gin-create-form').style.display = 'none';
+  document.getElementById('gin-link-input').value = ''; document.getElementById('gin-link-results').innerHTML = '';
+  document.getElementById('gin-link-input').focus();
+}
+
+function ginHideNotfound() {
+  document.getElementById('gin-notfound').style.display = 'none';
+  document.getElementById('gin-create-form').style.display = 'none';
+  document.getElementById('gin-link-search').style.display = 'none';
+  showError('gin-create-error', '');
+  showError('gin-link-error', '');
+  document.getElementById('gin-barcode').focus();
+}
+
+function ginCreateItem() {
+  var data = new URLSearchParams();
+  data.append('generic_name', document.getElementById('gin-cf-generic').value.trim());
+  data.append('brand_name', document.getElementById('gin-cf-brand').value.trim());
+  data.append('dosage_form', document.getElementById('gin-cf-form').value.trim());
+  data.append('strength', document.getElementById('gin-cf-strength').value.trim());
+  data.append('pack_size', document.getElementById('gin-cf-pack').value.trim());
+  data.append('uom', document.getElementById('gin-cf-uom').value.trim());
+  data.append('manufacturer', document.getElementById('gin-cf-manufacturer').value.trim());
+  data.append('country', document.getElementById('gin-cf-country').value.trim());
+  data.append('barcode', document.getElementById('gin-barcode').value.trim());
+
+  fetch('/api/create-item', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: data })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { showError('gin-create-error', d.error); return; }
+      showError('gin-create-error', '');
+      ginState.customer = document.getElementById('gin-customer').value.trim();
+      ginState.item_id = d.item_id; ginState.generic_name = d.generic_name; ginState.brand_name = d.brand_name;
+      ginState.dosage_form = d.dosage_form; ginState.strength = d.strength; ginState.uom = d.uom;
+      document.getElementById('gin-item-preview').innerHTML = grnCard(d);
+      ginHideNotfound();
+      // Fetch stock and proceed
+      fetch('/api/gin/lookup?item_id=' + d.item_id + '&warehouse_id=WH-001')
+        .then(function(r) { return r.json(); })
+        .then(function(s) {
+          ginState.total_avail = s.total_avail;
+          ginState.batches = s.batches || [];
+          ginState.fefo = true;
+          document.getElementById('gin-fefo').checked = true;
+          var html = '<div class="avail">' + s.total_avail + ' ' + ginState.uom + '</div><div class="label">Available in WH-001</div>';
+          if (s.batches && s.batches.length > 0) {
+            html += '<div class="stock-batches">Batches (FEFO): ';
+            html += s.batches.map(function(b) { return b.batch_no + ' (' + b.expiry_date + ') ' + b.qty_onhand; }).join(', ');
+            html += '</div>';
+          }
+          document.getElementById('gin-stock-info').innerHTML = html;
+          var sel = document.getElementById('gin-batch-select');
+          sel.innerHTML = '<option value="">-- Select a batch --</option>';
+          ginState.batches.forEach(function(b) {
+            var label = (b.item_name || ginState.brand_name + ' ' + ginState.strength) + ' | Exp: ' + b.expiry_date + ' | Qty: ' + b.qty_onhand + ' ' + b.uom;
+            sel.innerHTML += '<option value="' + b.batch_no + '" data-qty="' + b.qty_onhand + '">' + label + '</option>';
+          });
+          sel.style.display = 'none';
+          document.getElementById('gin-stock-info').style.display = '';
+          ginGoStep(2);
+        });
+    });
+}
+
+var _ginLinkTimer = null;
+var _ginLinkResults = [];
+function ginLinkSearchInput() {
+  clearTimeout(_ginLinkTimer);
+  var q = document.getElementById('gin-link-input').value.trim();
+  var dropdown = document.getElementById('gin-link-results');
+  if (q.length < 2) { dropdown.classList.remove('open'); dropdown.innerHTML = ''; return; }
+  _ginLinkTimer = setTimeout(function() {
+    fetch('/api/search-items?q=' + encodeURIComponent(q) + '&all=1')
+      .then(function(r) { return r.json(); })
+      .then(function(results) {
+        _ginLinkResults = results || [];
+        if (results.length === 0) {
+          dropdown.innerHTML = '<div class="autocomplete-no-results">No matching items</div>';
+        } else {
+          var html = '';
+          results.forEach(function(r, i) {
+            html += '<div class="autocomplete-item" onclick="ginLinkSelect(' + i + ')">' +
+              '<div class="item-name">' + r.brand_name + ' (' + r.generic_name + ' ' + r.strength + ')</div>' +
+              '<div class="item-detail"><span>' + r.dosage_form + '</span><span>' + r.item_id + '</span><span>Pack: ' + r.pack_size + ' ' + r.uom + '</span></div>' +
+            '</div>';
+          });
+          dropdown.innerHTML = html;
+        }
+        dropdown.classList.add('open');
+      });
+  }, 250);
+}
+
+function ginLinkSelect(idx) {
+  var r = _ginLinkResults[idx]; if (!r) return;
+  var data = new URLSearchParams();
+  data.append('item_id', r.item_id);
+  data.append('barcode', document.getElementById('gin-barcode').value.trim());
+  fetch('/api/link-barcode', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: data })
+    .then(function(resp) { return resp.json(); })
+    .then(function(d) {
+      if (d.error) { showError('gin-link-error', d.error); return; }
+      showError('gin-link-error', '');
+      ginState.customer = document.getElementById('gin-customer').value.trim();
+      ginState.item_id = d.item_id; ginState.generic_name = d.generic_name; ginState.brand_name = d.brand_name;
+      ginState.dosage_form = d.dosage_form; ginState.strength = d.strength; ginState.uom = d.uom;
+      document.getElementById('gin-item-preview').innerHTML = grnCard(d);
+      ginHideNotfound();
+      // Fetch stock and proceed
+      fetch('/api/gin/lookup?item_id=' + d.item_id + '&warehouse_id=WH-001')
+        .then(function(r) { return r.json(); })
+        .then(function(s) {
+          ginState.total_avail = s.total_avail;
+          ginState.batches = s.batches || [];
+          ginState.fefo = true;
+          document.getElementById('gin-fefo').checked = true;
+          var html = '<div class="avail">' + s.total_avail + ' ' + ginState.uom + '</div><div class="label">Available in WH-001</div>';
+          if (s.batches && s.batches.length > 0) {
+            html += '<div class="stock-batches">Batches (FEFO): ';
+            html += s.batches.map(function(b) { return b.batch_no + ' (' + b.expiry_date + ') ' + b.qty_onhand; }).join(', ');
+            html += '</div>';
+          }
+          document.getElementById('gin-stock-info').innerHTML = html;
+          var sel = document.getElementById('gin-batch-select');
+          sel.innerHTML = '<option value="">-- Select a batch --</option>';
+          ginState.batches.forEach(function(b) {
+            var label = (b.item_name || ginState.brand_name + ' ' + ginState.strength) + ' | Exp: ' + b.expiry_date + ' | Qty: ' + b.qty_onhand + ' ' + b.uom;
+            sel.innerHTML += '<option value="' + b.batch_no + '" data-qty="' + b.qty_onhand + '">' + label + '</option>';
+          });
+          sel.style.display = 'none';
+          document.getElementById('gin-stock-info').style.display = '';
+          ginGoStep(2);
+        });
+    });
+}
+
+// GIN link search keyboard nav
+document.getElementById('gin-link-input').addEventListener('keydown', function(e) {
+  var dropdown = document.getElementById('gin-link-results');
+  var items = dropdown.querySelectorAll('.autocomplete-item');
+  if (e.key === 'Escape') { dropdown.classList.remove('open'); return; }
+  if (!dropdown.classList.contains('open')) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault(); _ginLinkSearchIdx = Math.min((_ginLinkSearchIdx || -1) + 1, items.length - 1);
+    items.forEach(function(el, i) { el.classList.toggle('active', i === _ginLinkSearchIdx); });
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault(); _ginLinkSearchIdx = Math.max((_ginLinkSearchIdx || 0) - 1, 0);
+    items.forEach(function(el, i) { el.classList.toggle('active', i === _ginLinkSearchIdx); });
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (_ginLinkSearchIdx >= 0 && _ginLinkSearchIdx < items.length) ginLinkSelect(_ginLinkSearchIdx);
+  }
+});
+var _ginLinkSearchIdx = -1;
 
 function ginSubmit() {
   var q = parseInt(document.getElementById('gin-qty').value);
@@ -500,6 +944,12 @@ function ginSearchSelect(idx) {
 document.addEventListener('click', function(e) {
   if (!e.target.closest('#gin-search') && !e.target.closest('#gin-search-results')) {
     document.getElementById('gin-search-results').classList.remove('open');
+  }
+  if (!e.target.closest('#grn-link-input') && !e.target.closest('#grn-link-results')) {
+    document.getElementById('grn-link-results').classList.remove('open');
+  }
+  if (!e.target.closest('#gin-link-input') && !e.target.closest('#gin-link-results')) {
+    document.getElementById('gin-link-results').classList.remove('open');
   }
 });
 

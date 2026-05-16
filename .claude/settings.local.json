@@ -13,7 +13,11 @@
       "Bash(sqlite3 *)",
       "Bash(go run *)",
       "Bash(pkill -f ./inv_grn)",
-      "Bash(python3 -m json.tool)"
+      "Bash(python3 -m json.tool)",
+      "Bash(pkill -f \"inv_grn\")",
+      "Bash(git add *)",
+      "Bash(git *)",
+      "Bash(python3 *)"
     ]
   }
 }

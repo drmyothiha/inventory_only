@@ -34,6 +34,8 @@ func main() {
 	http.HandleFunc("/api/search-items", searchItems)
 	http.HandleFunc("/api/item/", lookupItem)
 	http.HandleFunc("/api/onhand", getOnHand)
+	http.HandleFunc("/api/create-item", createItem)
+	http.HandleFunc("/api/link-barcode", linkBarcode)
 
 	log.Println("App running on http://localhost:9090")
 	log.Fatal(http.ListenAndServe(":9090", nil))
@@ -52,7 +54,9 @@ func initDB() {
 		strength TEXT NOT NULL,
 		pack_size INTEGER NOT NULL,
 		uom TEXT NOT NULL,
-		barcode TEXT UNIQUE NOT NULL
+		barcode TEXT UNIQUE NOT NULL,
+		manufacturer TEXT NOT NULL DEFAULT '',
+		country TEXT NOT NULL DEFAULT ''
 	);
 
 	CREATE TABLE IF NOT EXISTS inv_grn_header (
@@ -126,25 +130,28 @@ func initDB() {
 		log.Fatal(err)
 	}
 
+	// Migrate: add new columns if missing (ignore errors if already exist)
+	db.Exec("ALTER TABLE inv_item_master ADD COLUMN manufacturer TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE inv_item_master ADD COLUMN country TEXT NOT NULL DEFAULT ''")
+
 	migrateFromLegacyOnhand()
 
 	// Seed item master
 	items := []struct {
-		ItemID, Generic, Brand, Form, Strength, UOM, Barcode string
-		PackSize                                             int
+		ItemID, Generic, Brand, Form, Strength, UOM, Barcode, Manufacturer, Country string
+		PackSize                                                                    int
 	}{
-		{"ITM-001", "Paracetamol", "Panadol", "Tablet", "500mg", "Pack", "8901234567890", 100},
-		{"ITM-002", "Paracetamol", "Panadol", "Tablet", "250mg", "Pack", "8901234567891", 100},
-		{"ITM-003", "Paracetamol", "Calpol", "Syrup", "120mg/5ml", "Bottle", "8901234567892", 60},
-		{"ITM-004", "Paracetamol", "Crocin", "Tablet", "650mg", "Strip", "8901234567893", 15},
-		{"ITM-005", "Paracetamol", "Tylenol", "Caplet", "500mg", "Pack", "8901234567894", 50},
+		{"ITM-001", "Paracetamol", "Panadol", "Tablet", "500mg", "Pack", "8901234567890", "GSK", "UK", 100},
+		{"ITM-002", "Paracetamol", "Panadol", "Tablet", "250mg", "Pack", "8901234567891", "GSK", "UK", 100},
+		{"ITM-003", "Paracetamol", "Calpol", "Syrup", "120mg/5ml", "Bottle", "8901234567892", "GSK", "UK", 60},
+		{"ITM-004", "Paracetamol", "Crocin", "Tablet", "650mg", "Strip", "8901234567893", "GSK", "India", 15},
+		{"ITM-005", "Paracetamol", "Tylenol", "Caplet", "500mg", "Pack", "8901234567894", "J&J", "USA", 50},
 	}
 	for _, it := range items {
 		db.Exec(
-			`INSERT OR IGNORE INTO inv_item_master (item_id, generic_name, brand_name, dosage_form, strength, pack_size, uom, barcode)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			it.ItemID, it.Generic, it.Brand, it.Form, it.Strength, it.PackSize, it.UOM, it.Barcode,
-		)
+			`INSERT OR IGNORE INTO inv_item_master (item_id, generic_name, brand_name, dosage_form, strength, pack_size, uom, barcode, manufacturer, country)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			it.ItemID, it.Generic, it.Brand, it.Form, it.Strength, it.PackSize, it.UOM, it.Barcode, it.Manufacturer, it.Country)
 	}
 	fmt.Println("Database initialized.")
 }
@@ -252,17 +259,61 @@ type ItemMaster struct {
 	Strength    string `json:"strength"`
 	PackSize    int    `json:"pack_size"`
 	UOM         string `json:"uom"`
-	Barcode     string `json:"barcode"`
+	Barcode      string `json:"barcode"`
+	Manufacturer string `json:"manufacturer"`
+	Country      string `json:"country"`
 }
 
 func searchItems(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
+	allItems := r.URL.Query().Get("all") == "1"
 	warehouseID := r.URL.Query().Get("warehouse_id")
 	if warehouseID == "" {
 		warehouseID = defaultWarehouse
 	}
 	if q == "" {
 		http.Error(w, `{"error":"missing q"}`, 400)
+		return
+	}
+
+	if allItems {
+		like := "%" + q + "%"
+		rows, err := db.Query(`
+			SELECT item_id, generic_name, brand_name, dosage_form, strength, uom, barcode, pack_size, manufacturer, country
+			FROM inv_item_master
+			WHERE generic_name LIKE ? OR brand_name LIKE ?
+			ORDER BY brand_name
+			LIMIT 20
+		`, like, like)
+		if err != nil {
+			http.Error(w, "Query failed", 500)
+			return
+		}
+		defer rows.Close()
+
+		type SimpleItem struct {
+			ItemID      string `json:"item_id"`
+			GenericName string `json:"generic_name"`
+			BrandName   string `json:"brand_name"`
+			DosageForm  string `json:"dosage_form"`
+			Strength    string `json:"strength"`
+			UOM         string `json:"uom"`
+			Barcode     string `json:"barcode"`
+			PackSize     int    `json:"pack_size"`
+		Manufacturer string `json:"manufacturer"`
+		Country      string `json:"country"`
+		}
+		var results []SimpleItem
+		for rows.Next() {
+			var it SimpleItem
+			rows.Scan(&it.ItemID, &it.GenericName, &it.BrandName, &it.DosageForm, &it.Strength, &it.UOM, &it.Barcode, &it.PackSize, &it.Manufacturer, &it.Country)
+			results = append(results, it)
+		}
+		if results == nil {
+			results = []SimpleItem{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(results)
 		return
 	}
 
@@ -320,9 +371,9 @@ func lookupItem(w http.ResponseWriter, r *http.Request) {
 
 	var it ItemMaster
 	err := db.QueryRow(
-		`SELECT item_id, generic_name, brand_name, dosage_form, strength, pack_size, uom, barcode
+		`SELECT item_id, generic_name, brand_name, dosage_form, strength, pack_size, uom, barcode, manufacturer, country
 		 FROM inv_item_master WHERE barcode = ?`, barcode,
-	).Scan(&it.ItemID, &it.GenericName, &it.BrandName, &it.DosageForm, &it.Strength, &it.PackSize, &it.UOM, &it.Barcode)
+	).Scan(&it.ItemID, &it.GenericName, &it.BrandName, &it.DosageForm, &it.Strength, &it.PackSize, &it.UOM, &it.Barcode, &it.Manufacturer, &it.Country)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err == sql.ErrNoRows {
@@ -440,8 +491,7 @@ func handleGRN(w http.ResponseWriter, r *http.Request) {
 	_, err = tx.Exec(
 		`INSERT INTO inv_grn_detail (grn_header_id, item_id, item_name, batch_no, expiry_date, qty, uom, warehouse_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		headerID, itemID, itemName, batchNo, expiryDate, qty, uom, warehouseID,
-	)
+		headerID, itemID, itemName, batchNo, expiryDate, qty, uom, warehouseID)
 	if err != nil {
 		http.Error(w, "Failed to create GRN detail: "+err.Error(), 500)
 		return
@@ -785,4 +835,103 @@ func getOnHand(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(results)
+}
+
+// POST /api/create-item
+func createItem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+
+	genericName := r.FormValue("generic_name")
+	brandName := r.FormValue("brand_name")
+	dosageForm := r.FormValue("dosage_form")
+	strength := r.FormValue("strength")
+	barcode := r.FormValue("barcode")
+	packSizeStr := r.FormValue("pack_size")
+	uom := r.FormValue("uom")
+	manufacturer := r.FormValue("manufacturer")
+	country := r.FormValue("country")
+
+	if genericName == "" || brandName == "" || dosageForm == "" || strength == "" || barcode == "" || packSizeStr == "" {
+		http.Error(w, `{"error":"all fields required"}`, 400)
+		return
+	}
+	packSize, err := strconv.Atoi(packSizeStr)
+	if err != nil || packSize <= 0 {
+		http.Error(w, `{"error":"invalid pack_size"}`, 400)
+		return
+	}
+	if uom == "" {
+		uom = "Pack"
+	}
+
+	// Auto-generate item_id
+	var maxID sql.NullString
+	db.QueryRow(`SELECT MAX(item_id) FROM inv_item_master`).Scan(&maxID)
+	nextNum := 1
+	if maxID.Valid && len(maxID.String) >= 7 {
+		n, err := strconv.Atoi(maxID.String[4:])
+		if err == nil {
+			nextNum = n + 1
+		}
+	}
+	itemID := fmt.Sprintf("ITM-%03d", nextNum)
+
+	_, err = db.Exec(
+		`INSERT INTO inv_item_master (item_id, generic_name, brand_name, dosage_form, strength, pack_size, uom, barcode, manufacturer, country)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		itemID, genericName, brandName, dosageForm, strength, packSize, uom, barcode, manufacturer, country)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"error": "barcode already exists"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ItemMaster{
+		ItemID: itemID, GenericName: genericName, BrandName: brandName,
+		DosageForm: dosageForm, Strength: strength, PackSize: packSize,
+		Manufacturer: manufacturer, Country: country,
+		UOM: uom, Barcode: barcode,
+	})
+}
+
+// POST /api/link-barcode
+func linkBarcode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+
+	itemID := r.FormValue("item_id")
+	barcode := r.FormValue("barcode")
+	if itemID == "" || barcode == "" {
+		http.Error(w, `{"error":"item_id and barcode required"}`, 400)
+		return
+	}
+
+	res, err := db.Exec(`UPDATE inv_item_master SET barcode = ? WHERE item_id = ?`, barcode, itemID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"error": "barcode already in use"})
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"error": "item not found"})
+		return
+	}
+
+	// Return full item
+	var it ItemMaster
+	db.QueryRow(
+		`SELECT item_id, generic_name, brand_name, dosage_form, strength, pack_size, uom, barcode, manufacturer, country
+		 FROM inv_item_master WHERE item_id = ?`, itemID,
+	).Scan(&it.ItemID, &it.GenericName, &it.BrandName, &it.DosageForm, &it.Strength, &it.PackSize, &it.UOM, &it.Barcode, &it.Manufacturer, &it.Country)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(it)
 }
