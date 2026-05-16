@@ -125,6 +125,67 @@ func initDB() {
 		UNIQUE(item_id, warehouse_id, batch_id),
 		FOREIGN KEY (batch_id) REFERENCES inv_batch_master(batch_id)
 	);
+
+	CREATE TABLE IF NOT EXISTS inv_supplier_master (
+		supplier_id TEXT PRIMARY KEY,
+		supplier_name TEXT NOT NULL,
+		contact_info TEXT NOT NULL DEFAULT ''
+	);
+
+	CREATE TABLE IF NOT EXISTS inv_contract_master (
+		contract_no TEXT PRIMARY KEY,
+		supplier_id TEXT NOT NULL,
+		start_date TEXT NOT NULL,
+		end_date TEXT NOT NULL,
+		FOREIGN KEY (supplier_id) REFERENCES inv_supplier_master(supplier_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS inv_pmed_header (
+		pmed_no TEXT PRIMARY KEY,
+		contract_no TEXT NOT NULL,
+		supplier_id TEXT NOT NULL,
+		pmed_date TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'OPEN',
+		FOREIGN KEY (contract_no) REFERENCES inv_contract_master(contract_no),
+		FOREIGN KEY (supplier_id) REFERENCES inv_supplier_master(supplier_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS inv_pmed_detail (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		pmed_no TEXT NOT NULL,
+		dsn TEXT NOT NULL,
+		sku_no TEXT NOT NULL,
+		qty_ordered INTEGER NOT NULL,
+		uom TEXT NOT NULL,
+		UNIQUE(pmed_no, dsn),
+		FOREIGN KEY (pmed_no) REFERENCES inv_pmed_header(pmed_no)
+	);
+
+	CREATE TABLE IF NOT EXISTS inv_do_header (
+		do_no TEXT PRIMARY KEY,
+		pmed_no TEXT NOT NULL,
+		supplier_id TEXT NOT NULL,
+		do_date TEXT NOT NULL,
+		received_date TEXT NOT NULL,
+		FOREIGN KEY (pmed_no) REFERENCES inv_pmed_header(pmed_no),
+		FOREIGN KEY (supplier_id) REFERENCES inv_supplier_master(supplier_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS inv_do_detail (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		do_no TEXT NOT NULL,
+		dsn TEXT NOT NULL,
+		sku_no TEXT NOT NULL,
+		qty_delivered INTEGER NOT NULL,
+		batch_no TEXT NOT NULL,
+		expiry_date TEXT NOT NULL,
+		FOREIGN KEY (do_no) REFERENCES inv_do_header(do_no)
+	);
+
+	CREATE TABLE IF NOT EXISTS inv_store_location (
+		location_id INTEGER PRIMARY KEY,
+		location_name TEXT NOT NULL UNIQUE
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		log.Fatal(err)
@@ -133,6 +194,13 @@ func initDB() {
 	// Migrate: add new columns if missing (ignore errors if already exist)
 	db.Exec("ALTER TABLE inv_item_master ADD COLUMN manufacturer TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE inv_item_master ADD COLUMN country TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE inv_item_master ADD COLUMN sku_no TEXT NOT NULL DEFAULT ''")
+	db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_item_master_sku ON inv_item_master(sku_no) WHERE sku_no != ''")
+
+	// Seed store locations 1 to 23
+	for i := 1; i <= 23; i++ {
+		db.Exec("INSERT OR IGNORE INTO inv_store_location (location_id, location_name) VALUES (?, ?)", i, fmt.Sprintf("Store %d", i))
+	}
 
 	migrateFromLegacyOnhand()
 
