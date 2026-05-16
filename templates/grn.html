@@ -559,7 +559,19 @@ function grnSubmit() {
 }
 
 // GRN enter keys
-document.getElementById('grn-barcode').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); grnLookup(); } });
+var _grnBarcodeTimer = null;
+document.getElementById('grn-barcode').addEventListener('input', function(e) {
+  clearTimeout(_grnBarcodeTimer);
+  document.getElementById('grn-notfound').style.display = 'none';
+  showError('grn-item-error', '');
+  var bc = this.value.trim();
+  if (bc.length > 0) {
+    _grnBarcodeTimer = setTimeout(function() {
+      grnLookup();
+    }, 600);
+  }
+});
+document.getElementById('grn-barcode').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(_grnBarcodeTimer); grnLookup(); } });
 document.getElementById('grn-batch').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); grnSaveBatch(); } });
 document.getElementById('grn-expiry').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); grnSaveExpiry(); } });
 document.getElementById('grn-qty').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); grnSubmit(); } });
@@ -977,8 +989,20 @@ document.getElementById('gin-search').addEventListener('keydown', function(e) {
 document.getElementById('gin-search').addEventListener('input', ginSearchInput);
 
 // GIN enter keys
+var _ginBarcodeTimer = null;
+document.getElementById('gin-barcode').addEventListener('input', function(e) {
+  clearTimeout(_ginBarcodeTimer);
+  document.getElementById('gin-notfound').style.display = 'none';
+  showError('gin-item-error', '');
+  var bc = this.value.trim();
+  if (bc.length > 0) {
+    _ginBarcodeTimer = setTimeout(function() {
+      ginLookup();
+    }, 600);
+  }
+});
 document.getElementById('gin-customer').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('gin-search').focus(); } });
-document.getElementById('gin-barcode').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); ginLookup(); } });
+document.getElementById('gin-barcode').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(_ginBarcodeTimer); ginLookup(); } });
 document.getElementById('gin-qty').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); ginSubmit(); } });
 
 // ===== ON HAND =====
