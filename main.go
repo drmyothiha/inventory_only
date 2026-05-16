@@ -36,6 +36,13 @@ func main() {
 	http.HandleFunc("/api/onhand", getOnHand)
 	http.HandleFunc("/api/create-item", createItem)
 	http.HandleFunc("/api/link-barcode", linkBarcode)
+	http.HandleFunc("/api/suppliers", getSuppliers)
+	http.HandleFunc("/api/create-supplier", createSupplier)
+	http.HandleFunc("/api/contracts", getContracts)
+	http.HandleFunc("/api/create-contract", createContract)
+	http.HandleFunc("/api/stores", getStores)
+	http.HandleFunc("/api/pmed", createPMED)
+	http.HandleFunc("/api/do", createDO)
 
 	log.Println("App running on http://localhost:9090")
 	log.Fatal(http.ListenAndServe(":9090", nil))
@@ -1002,4 +1009,199 @@ func linkBarcode(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(it)
+}
+
+func getSuppliers(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query("SELECT supplier_id, supplier_name, contact_info FROM inv_supplier_master ORDER BY supplier_name")
+	if err != nil {
+		http.Error(w, "DB error", 500)
+		return
+	}
+	defer rows.Close()
+	var res []map[string]string
+	for rows.Next() {
+		var id, name, contact string
+		rows.Scan(&id, &name, &contact)
+		res = append(res, map[string]string{"supplier_id": id, "supplier_name": name, "contact_info": contact})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
+}
+
+func createPMED(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	pmedNo := r.FormValue("pmed_no")
+	contractNo := r.FormValue("contract_no")
+	supplierID := r.FormValue("supplier_id")
+	pmedDate := r.FormValue("pmed_date")
+
+	dsn := r.FormValue("dsn")
+	skuNo := r.FormValue("sku_no")
+	qtyStr := r.FormValue("qty_ordered")
+	uom := r.FormValue("uom")
+
+	if pmedNo == "" || contractNo == "" || supplierID == "" || dsn == "" || skuNo == "" || qtyStr == "" {
+		http.Error(w, `{"error":"missing required fields"}`, 400)
+		return
+	}
+	qty, err := strconv.Atoi(qtyStr)
+	if err != nil || qty <= 0 {
+		http.Error(w, `{"error":"invalid quantity"}`, 400)
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, "DB error", 500)
+		return
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec("INSERT OR IGNORE INTO inv_pmed_header (pmed_no, contract_no, supplier_id, pmed_date) VALUES (?, ?, ?, ?)", pmedNo, contractNo, supplierID, pmedDate)
+	if err != nil {
+		http.Error(w, "failed to insert header", 500)
+		return
+	}
+
+	_, err = tx.Exec("INSERT INTO inv_pmed_detail (pmed_no, dsn, sku_no, qty_ordered, uom) VALUES (?, ?, ?, ?, ?)", pmedNo, dsn, skuNo, qty, uom)
+	if err != nil {
+		http.Error(w, "failed to insert detail: duplicate DSN?", 500)
+		return
+	}
+
+	tx.Commit()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"success": "ok", "pmed_no": pmedNo})
+}
+
+func createDO(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	doNo := r.FormValue("do_no")
+	pmedNo := r.FormValue("pmed_no")
+	supplierID := r.FormValue("supplier_id")
+	doDate := r.FormValue("do_date")
+	receivedDate := r.FormValue("received_date")
+
+	dsn := r.FormValue("dsn")
+	skuNo := r.FormValue("sku_no")
+	qtyStr := r.FormValue("qty_delivered")
+	batchNo := r.FormValue("batch_no")
+	expiryDate := r.FormValue("expiry_date")
+
+	if doNo == "" || pmedNo == "" || supplierID == "" || dsn == "" || skuNo == "" || qtyStr == "" || batchNo == "" || expiryDate == "" {
+		http.Error(w, `{"error":"missing required fields"}`, 400)
+		return
+	}
+	qty, err := strconv.Atoi(qtyStr)
+	if err != nil || qty <= 0 {
+		http.Error(w, `{"error":"invalid quantity"}`, 400)
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, "DB error", 500)
+		return
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec("INSERT OR IGNORE INTO inv_do_header (do_no, pmed_no, supplier_id, do_date, received_date) VALUES (?, ?, ?, ?, ?)", doNo, pmedNo, supplierID, doDate, receivedDate)
+	if err != nil {
+		http.Error(w, "failed to insert header", 500)
+		return
+	}
+
+	_, err = tx.Exec("INSERT INTO inv_do_detail (do_no, dsn, sku_no, qty_delivered, batch_no, expiry_date) VALUES (?, ?, ?, ?, ?, ?)", doNo, dsn, skuNo, qty, batchNo, expiryDate)
+	if err != nil {
+		http.Error(w, "failed to insert detail", 500)
+		return
+	}
+
+	tx.Commit()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"success": "ok", "do_no": doNo})
+}
+
+func createSupplier(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	id := r.FormValue("supplier_id")
+	name := r.FormValue("supplier_name")
+	contact := r.FormValue("contact_info")
+	if id == "" || name == "" {
+		http.Error(w, `{"error":"supplier_id and name required"}`, 400)
+		return
+	}
+	_, err := db.Exec("INSERT INTO inv_supplier_master (supplier_id, supplier_name, contact_info) VALUES (?, ?, ?)", id, name, contact)
+	if err != nil {
+		http.Error(w, `{"error":"failed to create supplier"}`, 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"success": "ok"})
+}
+
+func getContracts(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query("SELECT contract_no, supplier_id, start_date, end_date FROM inv_contract_master ORDER BY contract_no")
+	if err != nil {
+		http.Error(w, "DB error", 500)
+		return
+	}
+	defer rows.Close()
+	var res []map[string]string
+	for rows.Next() {
+		var cno, sid, sd, ed string
+		rows.Scan(&cno, &sid, &sd, &ed)
+		res = append(res, map[string]string{"contract_no": cno, "supplier_id": sid, "start_date": sd, "end_date": ed})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
+}
+
+func createContract(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	cno := r.FormValue("contract_no")
+	sid := r.FormValue("supplier_id")
+	sd := r.FormValue("start_date")
+	ed := r.FormValue("end_date")
+	if cno == "" || sid == "" {
+		http.Error(w, `{"error":"contract_no and supplier_id required"}`, 400)
+		return
+	}
+	_, err := db.Exec("INSERT INTO inv_contract_master (contract_no, supplier_id, start_date, end_date) VALUES (?, ?, ?, ?)", cno, sid, sd, ed)
+	if err != nil {
+		http.Error(w, `{"error":"failed to create contract"}`, 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"success": "ok"})
+}
+
+func getStores(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query("SELECT location_id, location_name FROM inv_store_location ORDER BY location_id")
+	if err != nil {
+		http.Error(w, "DB error", 500)
+		return
+	}
+	defer rows.Close()
+	var res []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var name string
+		rows.Scan(&id, &name)
+		res = append(res, map[string]interface{}{"location_id": id, "location_name": name})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
 }

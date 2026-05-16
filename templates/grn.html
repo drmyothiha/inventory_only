@@ -105,6 +105,8 @@
     <div class="tab active" id="tab-grn" onclick="switchTab('grn')">Receive</div>
     <div class="tab" id="tab-gin" onclick="switchTab('gin')">Issue</div>
     <div class="tab" id="tab-onhand" onclick="switchTab('onhand')">On Hand</div>
+    <div class="tab" id="tab-pmed" onclick="switchTab('pmed')">PMED</div>
+    <div class="tab" id="tab-do" onclick="switchTab('do')">Delivery Order</div>
   </div>
 
   <!-- ===== RECEIVE STOCK (GRN) ===== -->
@@ -283,6 +285,52 @@
         </div>
       </div>
 
+    </div>
+  </div>
+
+  <!-- ===== PMED ===== -->
+  <div class="panel" id="panel-pmed">
+    <div class="body">
+      <div class="step-title">Create PMED (Procurement)</div>
+      <label>PMED No</label><input type="text" id="pmed-no" placeholder="e.g. PMED-2024-001" style="margin-bottom:8px;">
+      <label>Contract No</label><input type="text" id="pmed-contract" placeholder="e.g. CTR-001" style="margin-bottom:8px;">
+      <label>Supplier ID</label><input type="text" id="pmed-supplier" placeholder="e.g. SUP-001" style="margin-bottom:8px;">
+      <label>PMED Date</label><input type="date" id="pmed-date" style="margin-bottom:8px;">
+
+      <div class="step-title" style="margin-top:16px;font-size:16px;">Item Details</div>
+      <label>DSN (Drug Serial No)</label><input type="text" id="pmed-dsn" placeholder="e.g. DSN-12345" style="margin-bottom:8px;">
+      <label>SKU No</label><input type="text" id="pmed-sku" placeholder="e.g. SKU-100" style="margin-bottom:8px;">
+      <label>Qty Ordered</label><input type="number" id="pmed-qty" placeholder="e.g. 500" style="margin-bottom:8px;">
+      <label>UOM</label><input type="text" id="pmed-uom" placeholder="e.g. Pack" value="Pack" style="margin-bottom:16px;">
+
+      <div class="error" id="pmed-error"></div>
+      <div class="btn-row">
+        <button class="btn btn-success" onclick="submitPMED()">Create PMED</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== DELIVERY ORDER ===== -->
+  <div class="panel" id="panel-do">
+    <div class="body">
+      <div class="step-title">Create Delivery Order (DO)</div>
+      <label>DO No</label><input type="text" id="do-no" placeholder="e.g. DO-999" style="margin-bottom:8px;">
+      <label>PMED No</label><input type="text" id="do-pmed" placeholder="e.g. PMED-2024-001" style="margin-bottom:8px;">
+      <label>Supplier ID</label><input type="text" id="do-supplier" placeholder="e.g. SUP-001" style="margin-bottom:8px;">
+      <label>DO Date</label><input type="date" id="do-date" style="margin-bottom:8px;">
+      <label>Received Date</label><input type="date" id="do-recv-date" style="margin-bottom:8px;">
+
+      <div class="step-title" style="margin-top:16px;font-size:16px;">Item Details</div>
+      <label>DSN (Drug Serial No)</label><input type="text" id="do-dsn" placeholder="e.g. DSN-12345" style="margin-bottom:8px;">
+      <label>SKU No</label><input type="text" id="do-sku" placeholder="e.g. SKU-100" style="margin-bottom:8px;">
+      <label>Qty Delivered</label><input type="number" id="do-qty" placeholder="e.g. 500" style="margin-bottom:8px;">
+      <label>Batch No</label><input type="text" id="do-batch" placeholder="e.g. BATCH-A01" style="margin-bottom:8px;">
+      <label>Expiry Date</label><input type="date" id="do-expiry" style="margin-bottom:16px;">
+
+      <div class="error" id="do-error"></div>
+      <div class="btn-row">
+        <button class="btn btn-success" onclick="submitDO()">Create Delivery Order</button>
+      </div>
     </div>
   </div>
 
@@ -1004,6 +1052,60 @@ document.getElementById('gin-barcode').addEventListener('input', function(e) {
 document.getElementById('gin-customer').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); document.getElementById('gin-search').focus(); } });
 document.getElementById('gin-barcode').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(_ginBarcodeTimer); ginLookup(); } });
 document.getElementById('gin-qty').addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); ginSubmit(); } });
+
+// ===== PMED & DO SUBMIT =====
+function submitPMED() {
+  var f = new FormData();
+  f.append('pmed_no', document.getElementById('pmed-no').value.trim());
+  f.append('contract_no', document.getElementById('pmed-contract').value.trim());
+  f.append('supplier_id', document.getElementById('pmed-supplier').value.trim());
+  f.append('pmed_date', document.getElementById('pmed-date').value);
+  f.append('dsn', document.getElementById('pmed-dsn').value.trim());
+  f.append('sku_no', document.getElementById('pmed-sku').value.trim());
+  f.append('qty_ordered', document.getElementById('pmed-qty').value.trim());
+  f.append('uom', document.getElementById('pmed-uom').value.trim());
+
+  fetch('/api/pmed', { method: 'POST', body: f })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { showError('pmed-error', d.error); }
+      else {
+        showError('pmed-error', '');
+        alert('PMED created: ' + d.pmed_no);
+        document.getElementById('pmed-dsn').value = '';
+        document.getElementById('pmed-sku').value = '';
+        document.getElementById('pmed-qty').value = '';
+      }
+    });
+}
+
+function submitDO() {
+  var f = new FormData();
+  f.append('do_no', document.getElementById('do-no').value.trim());
+  f.append('pmed_no', document.getElementById('do-pmed').value.trim());
+  f.append('supplier_id', document.getElementById('do-supplier').value.trim());
+  f.append('do_date', document.getElementById('do-date').value);
+  f.append('received_date', document.getElementById('do-recv-date').value);
+  f.append('dsn', document.getElementById('do-dsn').value.trim());
+  f.append('sku_no', document.getElementById('do-sku').value.trim());
+  f.append('qty_delivered', document.getElementById('do-qty').value.trim());
+  f.append('batch_no', document.getElementById('do-batch').value.trim());
+  f.append('expiry_date', document.getElementById('do-expiry').value);
+
+  fetch('/api/do', { method: 'POST', body: f })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { showError('do-error', d.error); }
+      else {
+        showError('do-error', '');
+        alert('Delivery Order created: ' + d.do_no);
+        document.getElementById('do-dsn').value = '';
+        document.getElementById('do-sku').value = '';
+        document.getElementById('do-qty').value = '';
+        document.getElementById('do-batch').value = '';
+      }
+    });
+}
 
 // ===== ON HAND =====
 function loadOnHand() {
